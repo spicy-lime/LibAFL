@@ -1,6 +1,6 @@
 use std::env;
 
-use libafl_cc::{ClangWrapper, CompilerWrapper};
+use libafl_cc::{ClangWrapper, CompilerWrapper, LLVMPasses};
 
 pub fn main() {
     let args: Vec<String> = env::args().collect();
@@ -16,6 +16,15 @@ pub fn main() {
 
         dir.pop();
 
+        let input_file = if is_cpp {
+            args.iter().find(|x| x.ends_with(".cc"))
+        } else {
+            args.iter().find(|x| x.ends_with(".c"))
+        }.map(|x| x.as_str()).unwrap_or("unknown");
+
+        let input_file = input_file.split("/").last().unwrap();
+        println!("input_file: {input_file}");
+
         let mut cc = ClangWrapper::new();
         if let Some(code) = cc
             .cpp(is_cpp)
@@ -24,7 +33,9 @@ pub fn main() {
             .parse_args(&args)
             .expect("Failed to parse the command line")
             .link_staticlib(&dir, "libfuzzer_libpng")
-            .add_arg("-fsanitize-coverage=trace-pc-guard")
+            .add_pass(LLVMPasses::AFLCoverage)
+            .add_passes_arg("-dump_afl_cfg")
+            .add_passes_arg(format!("-dump_afl_cfg_path=./{input_file}.cfg"))
             .run()
             .expect("Failed to run the wrapped compiler")
         {
