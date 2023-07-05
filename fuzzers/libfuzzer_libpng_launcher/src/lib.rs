@@ -112,6 +112,7 @@ struct Opt {
 /// The main fn, `no_mangle` as it is a C symbol
 #[no_mangle]
 pub fn libafl_main() {
+    env_logger::init();
     // Registry the metadata types used in this fuzzer
     // Needed only on no_std
     //RegistryBuilder::register::<Tokens>();
@@ -245,7 +246,7 @@ pub fn libafl_main() {
         .cores(&cores)
         .broker_port(broker_port)
         .remote_broker_addr(opt.remote_broker_addr)
-        .stdout_file(Some("/dev/null"))
+        // .stdout_file(Some("/dev/null"))
         .build()
         .launch()
     {
