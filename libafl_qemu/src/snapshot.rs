@@ -14,7 +14,12 @@ use crate::SYS_fstatat64;
 use crate::SYS_mmap;
 #[cfg(any(cpu_target = "arm", cpu_target = "mips"))]
 use crate::SYS_mmap2;
-#[cfg(not(any(cpu_target = "arm", cpu_target = "mips", cpu_target = "i386")))]
+#[cfg(not(any(
+    cpu_target = "arm",
+    cpu_target = "mips",
+    cpu_target = "i386",
+    cpu_target = "ppc"
+)))]
 use crate::SYS_newfstatat;
 use crate::{
     emu::{Emulator, MmapPerms, SyscallHookResult},
@@ -206,7 +211,7 @@ impl QemuSnapshotHelper {
         {
             let new_maps = self.new_maps.get_mut().unwrap();
 
-            for acc in self.accesses.iter_mut() {
+            for acc in &mut self.accesses {
                 unsafe { &mut (*acc.get()) }.dirty.retain(|page| {
                     if let Some(info) = self.pages.get_mut(page) {
                         // TODO avoid duplicated memcpy
@@ -246,7 +251,7 @@ impl QemuSnapshotHelper {
         self.reset_maps(emulator);
 
         // This one is after that we remapped potential regions mapped at snapshot time but unmapped during execution
-        for acc in self.accesses.iter_mut() {
+        for acc in &mut self.accesses {
             for page in unsafe { &(*acc.get()).dirty } {
                 for entry in self
                     .maps
@@ -638,7 +643,12 @@ where
             let h = hooks.match_helper_mut::<QemuSnapshotHelper>().unwrap();
             h.access(a0 as GuestAddr, a3 as usize);
         }
-        #[cfg(not(any(cpu_target = "arm", cpu_target = "i386", cpu_target = "mips")))]
+        #[cfg(not(any(
+            cpu_target = "arm",
+            cpu_target = "i386",
+            cpu_target = "mips",
+            cpu_target = "ppc"
+        )))]
         SYS_newfstatat => {
             if a2 != 0 {
                 let h = hooks.match_helper_mut::<QemuSnapshotHelper>().unwrap();
@@ -661,7 +671,7 @@ where
             h.access(a0 as GuestAddr, a1 as usize);
         }
         // mmap syscalls
-        _ => {
+        sys_const => {
             if result as GuestAddr == GuestAddr::MAX
             /* -1 */
             {
@@ -671,7 +681,7 @@ where
             // TODO handle huge pages
 
             #[cfg(any(cpu_target = "arm", cpu_target = "mips"))]
-            if i64::from(sys_num) == SYS_mmap2 {
+            if sys_const == SYS_mmap2 {
                 if let Ok(prot) = MmapPerms::try_from(a2 as i32) {
                     let h = hooks.match_helper_mut::<QemuSnapshotHelper>().unwrap();
                     h.add_mapped(result as GuestAddr, a1 as usize, Some(prot));
@@ -679,24 +689,24 @@ where
             }
 
             #[cfg(not(cpu_target = "arm"))]
-            if i64::from(sys_num) == SYS_mmap {
+            if sys_const == SYS_mmap {
                 if let Ok(prot) = MmapPerms::try_from(a2 as i32) {
                     let h = hooks.match_helper_mut::<QemuSnapshotHelper>().unwrap();
                     h.add_mapped(result as GuestAddr, a1 as usize, Some(prot));
                 }
             }
 
-            if i64::from(sys_num) == SYS_mremap {
+            if sys_const == SYS_mremap {
                 let h = hooks.match_helper_mut::<QemuSnapshotHelper>().unwrap();
+                // TODO get the old permissions from the removed mapping
                 h.remove_mapped(a0 as GuestAddr, a1 as usize);
                 h.add_mapped(result as GuestAddr, a2 as usize, None);
-                // TODO get the old permissions from the removed mappin
-            } else if i64::from(sys_num) == SYS_mprotect {
+            } else if sys_const == SYS_mprotect {
                 if let Ok(prot) = MmapPerms::try_from(a2 as i32) {
                     let h = hooks.match_helper_mut::<QemuSnapshotHelper>().unwrap();
                     h.add_mapped(a0 as GuestAddr, a1 as usize, Some(prot));
                 }
-            } else if i64::from(sys_num) == SYS_munmap {
+            } else if sys_const == SYS_munmap {
                 let h = hooks.match_helper_mut::<QemuSnapshotHelper>().unwrap();
                 if !h.accurate_unmap && !h.is_unmap_allowed(a0 as GuestAddr, a1 as usize) {
                     h.remove_mapped(a0 as GuestAddr, a1 as usize);

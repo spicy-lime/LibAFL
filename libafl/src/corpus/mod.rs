@@ -25,8 +25,10 @@ pub use cached::CachedOnDiskCorpus;
 pub mod minimizer;
 use core::{cell::RefCell, fmt};
 
+pub mod nop;
 #[cfg(feature = "cmin")]
 pub use minimizer::*;
+pub use nop::NopCorpus;
 use serde::{Deserialize, Serialize};
 
 use crate::{inputs::UsesInput, Error};
@@ -225,7 +227,7 @@ pub mod pybind {
 
     macro_rules! unwrap_me {
         ($wrapper:expr, $name:ident, $body:block) => {
-            crate::unwrap_me_body!(
+            libafl_bolts::unwrap_me_body!(
                 $wrapper,
                 $name,
                 $body,
@@ -242,7 +244,7 @@ pub mod pybind {
 
     macro_rules! unwrap_me_mut {
         ($wrapper:expr, $name:ident, $body:block) => {
-            crate::unwrap_me_mut_body!(
+            libafl_bolts::unwrap_me_mut_body!(
                 $wrapper,
                 $name,
                 $body,
