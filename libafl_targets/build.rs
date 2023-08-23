@@ -4,6 +4,9 @@ use std::{env, fs::File, io::Write, path::Path};
 
 #[allow(clippy::too_many_lines)]
 fn main() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target_family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap();
+
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let out_dir = out_dir.to_string_lossy().to_string();
     //let out_dir_path = Path::new(&out_dir);
@@ -122,8 +125,7 @@ fn main() {
         .file(src_dir.join("cmplog.c"))
         .compile("cmplog");
 
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    {
+    if target_os == "linux" || target_os == "freebsd" {
         println!("cargo:rerun-if-changed=src/forkserver.c");
 
         cc::Build::new()
@@ -131,8 +133,7 @@ fn main() {
             .compile("forkserver");
     }
 
-    #[cfg(windows)]
-    {
+    if target_family == "windows" {
         println!("cargo:rerun-if-changed=src/windows_asan.c");
 
         cc::Build::new()

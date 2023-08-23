@@ -7,7 +7,9 @@ use std::{
 const AFL_URL: &str = "https://github.com/AFLplusplus/AFLplusplus";
 
 fn main() {
-    if cfg!(windows) {
+    let target_family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap();
+
+    if target_family == "windows" {
         println!("cargo:warning=No support for windows yet.");
         exit(0);
     }
