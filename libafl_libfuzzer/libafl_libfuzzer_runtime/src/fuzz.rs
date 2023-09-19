@@ -143,7 +143,8 @@ where
             .local_addr()
             .unwrap()
             .port();
-
+        
+        log::info!("Creating Launcher on Port {}", broker_port);
         match Launcher::builder()
             .shmem_provider(shmem_provider)
             .configuration(EventConfig::from_name(options.fuzzer_name()))

@@ -547,6 +547,7 @@ pub unsafe extern "C" fn LLVMFuzzerRunDriver(
         .as_ref()
         .expect("Illegal harness provided to libafl.");
 
+        env_logger::init();
     // it appears that no one, not even libfuzzer, uses this return value
     // https://github.com/llvm/llvm-project/blob/llvmorg-15.0.7/compiler-rt/lib/fuzzer/FuzzerDriver.cpp#L648
     libafl_targets_libfuzzer_init(argc, argv);

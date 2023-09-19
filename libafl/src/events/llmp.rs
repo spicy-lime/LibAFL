@@ -108,6 +108,7 @@ where
     /// The port must not be bound yet to have a broker.
     #[cfg(feature = "std")]
     pub fn on_port(shmem_provider: SP, monitor: MT, port: u16) -> Result<Self, Error> {
+        log::info!("Creating attach to tcp {} in LlmpEventBroker", port);
         Ok(Self {
             monitor,
             llmp: llmp::LlmpBroker::create_attach_to_tcp(shmem_provider, port)?,
@@ -466,6 +467,7 @@ where
         port: u16,
         configuration: EventConfig,
     ) -> Result<Self, Error> {
+        log::info!("Creating attach to tcp {} in LlmpEventManager", port);
         Ok(Self {
             llmp: LlmpClient::create_attach_to_tcp(shmem_provider, port)?,
             #[cfg(feature = "llmp_compression")]
@@ -1171,6 +1173,7 @@ where
                 broker.broker_loop()
             };
 
+            log::info!("Creating attach to tcp {} RestartingMgr", self.broker_port);
             // We get here if we are on Unix, or we are a broker on Windows (or without forks).
             let (mgr, core_id) = match self.kind {
                 ManagerKind::Any => {

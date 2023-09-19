@@ -234,7 +234,7 @@ where
 
         if self.spawn_broker {
             #[cfg(feature = "std")]
-            log::info!("I am broker!!.");
+            log::info!("I am broker!!. {}", self.broker_port);
 
             // TODO we don't want always a broker here, think about using different laucher process to spawn different configurations
             RestartingMgr::<MT, S, SP>::builder()
@@ -347,7 +347,7 @@ where
 
         if self.spawn_broker {
             #[cfg(feature = "std")]
-            log::info!("I am broker!!.");
+            log::info!("I am broker!!. {}", self.broker_port);
 
             RestartingMgr::<MT, S, SP>::builder()
                 .shmem_provider(self.shmem_provider.clone())
