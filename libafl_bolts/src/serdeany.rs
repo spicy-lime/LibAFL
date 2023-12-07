@@ -69,7 +69,7 @@ macro_rules! create_serde_registry_for_trait {
         /// A [`crate::serdeany`] module.
         pub mod $mod_name {
 
-            use alloc::boxed::Box;
+            use alloc::{string::{String, ToString}, boxed::Box};
             use core::{any::TypeId, fmt};
 
             use hashbrown::{
@@ -100,14 +100,14 @@ macro_rules! create_serde_registry_for_trait {
                 where
                     V: serde::de::SeqAccess<'de>,
                 {
-                    let id: u128 = visitor.next_element()?.unwrap();
+                    let id: String = visitor.next_element()?.unwrap();
                     let cb = unsafe {
                         *REGISTRY
                             .deserializers
                             .as_ref()
                             .expect("Empty types registry")
                             .get(&id)
-                            .expect("Cannot deserialize an unregistered type")
+                            .unwrap_or_else(|| panic!("Cannot deserialize an unregistered type, id: {id}"))
                     };
                     let seed = DeserializeCallbackSeed::<dyn $trait_name> { cb };
                     let obj: Self::Value = visitor.next_element_seed(seed)?.unwrap();
@@ -117,7 +117,7 @@ macro_rules! create_serde_registry_for_trait {
 
             #[allow(unused_qualifications)]
             struct Registry {
-                deserializers: Option<HashMap<u128, DeserializeCallback<dyn $trait_name>>>,
+                deserializers: Option<HashMap<String, DeserializeCallback<dyn $trait_name>>>,
                 finalized: bool,
             }
 
@@ -130,7 +130,8 @@ macro_rules! create_serde_registry_for_trait {
                     assert!(!self.finalized, "Registry is already finalized!");
 
                     let deserializers = self.deserializers.get_or_insert_with(HashMap::default);
-                    deserializers.insert(unpack_type_id(TypeId::of::<T>()), |de| {
+                    deserializers.insert(
+                        core::any::type_name::<T>().to_string(), |de| {
                         Ok(Box::new(erased_serde::deserialize::<T>(de)?))
                     });
                 }
@@ -183,7 +184,7 @@ macro_rules! create_serde_registry_for_trait {
             #[allow(clippy::unsafe_derive_deserialize)]
             #[derive(Debug, Serialize, Deserialize)]
             pub struct SerdeAnyMap {
-                map: HashMap<u128, Box<dyn $trait_name>>,
+                map: HashMap<String, Box<dyn $trait_name>>,
             }
 
             // Cloning by serializing and deserializing. It ain't fast, but it's honest work.
@@ -221,7 +222,7 @@ macro_rules! create_serde_registry_for_trait {
                     T: $trait_name,
                 {
                     self.map
-                        .get(&unpack_type_id(TypeId::of::<T>()))
+                        .get(core::any::type_name::<T>())
                         .map(|x| x.as_ref().as_any().downcast_ref::<T>().unwrap())
                 }
 
@@ -233,7 +234,7 @@ macro_rules! create_serde_registry_for_trait {
                     T: $trait_name,
                 {
                     self.map
-                        .get_mut(&unpack_type_id(TypeId::of::<T>()))
+                        .get_mut(core::any::type_name::<T>())
                         .map(|x| x.as_mut().as_any_mut().downcast_mut::<T>().unwrap())
                 }
 
@@ -245,7 +246,7 @@ macro_rules! create_serde_registry_for_trait {
                     T: $trait_name,
                 {
                     self.map
-                        .remove(&unpack_type_id(TypeId::of::<T>()))
+                        .remove(core::any::type_name::<T>())
                         .map(|x| x.as_any_boxed().downcast::<T>().unwrap())
                 }
 
@@ -264,21 +265,21 @@ macro_rules! create_serde_registry_for_trait {
                 where
                     T: $trait_name,
                 {
-                    let id = unpack_type_id(TypeId::of::<T>());
+                    let id = core::any::type_name::<T>();
                     assert!(
                         unsafe {
                             REGISTRY
                                 .deserializers
                                 .as_ref()
                                 .expect("Empty types registry")
-                                .get(&id)
+                                .get(id)
                                 .is_some()
                         },
                         "Type {} was inserted without registration! Call {}::register or use serde_autoreg.",
                         core::any::type_name::<T>(),
                         core::any::type_name::<T>()
                     );
-                    self.map.insert(id, t);
+                    self.map.insert(id.to_string(), t);
                 }
 
                 /// Returns the count of elements in this map.
@@ -301,7 +302,7 @@ macro_rules! create_serde_registry_for_trait {
                 where
                     T: $trait_name,
                 {
-                    self.map.contains_key(&unpack_type_id(TypeId::of::<T>()))
+                    self.map.contains_key(core::any::type_name::<T>())
                 }
 
                 /// Create a new [`SerdeAnyMap`].
@@ -324,7 +325,7 @@ macro_rules! create_serde_registry_for_trait {
             #[allow(unused_qualifications)]
             #[derive(Debug, Serialize, Deserialize)]
             pub struct NamedSerdeAnyMap {
-                map: HashMap<u128, HashMap<u64, Box<dyn $trait_name>>>,
+                map: HashMap<alloc::string::String, HashMap<u64, Box<dyn $trait_name>>>,
             }
 
             // Cloning by serializing and deserializing. It ain't fast, but it's honest work.
@@ -345,7 +346,7 @@ macro_rules! create_serde_registry_for_trait {
                 where
                     T: $trait_name,
                 {
-                    match self.map.get(&unpack_type_id(TypeId::of::<T>())) {
+                    match self.map.get(core::any::type_name::<T>()) {
                         None => None,
                         Some(h) => h
                             .get(&hash_std(name.as_bytes()))
@@ -353,6 +354,7 @@ macro_rules! create_serde_registry_for_trait {
                     }
                 }
 
+                /*
                 /// Get an element of a given type contained in this map by [`TypeId`].
                 #[must_use]
                 #[allow(unused_qualifications)]
@@ -365,6 +367,7 @@ macro_rules! create_serde_registry_for_trait {
                             .map(AsRef::as_ref),
                     }
                 }
+                */
 
                 /// Get an element of a given type contained in this map by [`TypeId`], as mut.
                 #[must_use]
@@ -373,7 +376,7 @@ macro_rules! create_serde_registry_for_trait {
                 where
                     T: $trait_name,
                 {
-                    match self.map.get_mut(&unpack_type_id(TypeId::of::<T>())) {
+                    match self.map.get_mut(core::any::type_name::<T>()) {
                         None => None,
                         Some(h) => h
                             .get_mut(&hash_std(name.as_bytes()))
@@ -381,6 +384,7 @@ macro_rules! create_serde_registry_for_trait {
                     }
                 }
 
+                /*
                 /// Get an element of a given type contained in this map by [`TypeId`], as mut.
                 #[must_use]
                 #[inline]
@@ -396,6 +400,7 @@ macro_rules! create_serde_registry_for_trait {
                             .map(AsMut::as_mut),
                     }
                 }
+                */
 
                 /// Get all elements of a type contained in this map.
                 #[must_use]
@@ -413,7 +418,7 @@ macro_rules! create_serde_registry_for_trait {
                     T: $trait_name,
                 {
                     #[allow(clippy::manual_map)]
-                    match self.map.get(&unpack_type_id(TypeId::of::<T>())) {
+                    match self.map.get(core::any::type_name::<T>()) {
                         None => None,
                         Some(h) => {
                             Some(h.values().map(|x| x.as_any().downcast_ref::<T>().unwrap()))
@@ -421,6 +426,7 @@ macro_rules! create_serde_registry_for_trait {
                     }
                 }
 
+                /*
                 /// Get all elements of a given type contained in this map by [`TypeId`].
                 #[must_use]
                 #[allow(unused_qualifications)]
@@ -440,6 +446,7 @@ macro_rules! create_serde_registry_for_trait {
                         Some(h) => Some(h.values().map(|x| x.as_ref())),
                     }
                 }
+                */
 
                 /// Get all elements contained in this map, as mut.
                 #[inline]
@@ -456,7 +463,7 @@ macro_rules! create_serde_registry_for_trait {
                     T: $trait_name,
                 {
                     #[allow(clippy::manual_map)]
-                    match self.map.get_mut(&unpack_type_id(TypeId::of::<T>())) {
+                    match self.map.get_mut(core::any::type_name::<T>()) {
                         None => None,
                         Some(h) => Some(
                             h.values_mut()
@@ -465,6 +472,7 @@ macro_rules! create_serde_registry_for_trait {
                     }
                 }
 
+                /*
                 /// Get all [`TypeId`]`s` contained in this map, as mut.
                 #[inline]
                 #[allow(unused_qualifications)]
@@ -490,22 +498,23 @@ macro_rules! create_serde_registry_for_trait {
                 pub fn all_typeids(
                     &self,
                 ) -> core::iter::Map<
-                    Keys<'_, u128, HashMap<u64, Box<dyn $trait_name>>>,
-                    fn(&u128) -> TypeId,
+                    Keys<'_, & str, HashMap<u64, Box<dyn $trait_name>>>,
+                    fn(& str) -> TypeId,
                 > {
-                    self.map.keys().map(|x| pack_type_id(*x))
+                    self.map.keys().map(|x| x)
                 }
+                */
 
                 /// Run `func` for each element in this map.
                 #[inline]
                 #[allow(unused_qualifications)]
-                pub fn for_each<F: FnMut(&TypeId, &Box<dyn $trait_name>) -> Result<(), Error>>(
+                pub fn for_each<F: FnMut(&str, &Box<dyn $trait_name>) -> Result<(), Error>>(
                     &self,
                     func: &mut F,
                 ) -> Result<(), Error> {
                     for (id, h) in self.map.iter() {
                         for x in h.values() {
-                            func(&pack_type_id(*id), x)?;
+                            func(id, x)?;
                         }
                     }
                     Ok(())
@@ -514,14 +523,14 @@ macro_rules! create_serde_registry_for_trait {
                 /// Run `func` for each element in this map, getting a mutable borrow.
                 #[inline]
                 pub fn for_each_mut<
-                    F: FnMut(&TypeId, &mut Box<dyn $trait_name>) -> Result<(), Error>,
+                    F: FnMut(&str, &mut Box<dyn $trait_name>) -> Result<(), Error>,
                 >(
                     &mut self,
                     func: &mut F,
                 ) -> Result<(), Error> {
                     for (id, h) in self.map.iter_mut() {
                         for x in h.values_mut() {
-                            func(&pack_type_id(*id), x)?;
+                            func(id, x)?;
                         }
                     }
                     Ok(())
@@ -534,25 +543,25 @@ macro_rules! create_serde_registry_for_trait {
                 where
                     T: $trait_name,
                 {
-                    let id = unpack_type_id(TypeId::of::<T>());
+                    let id = core::any::type_name::<T>();
                     assert!(
                         unsafe {
                             REGISTRY
                                 .deserializers
                                 .as_ref()
                                 .expect("Empty types registry")
-                                .get(&id)
+                                .get(id)
                                 .is_some()
                         },
                         "Type {} was inserted without registration! Call {}::register or use serde_autoreg.",
                         core::any::type_name::<T>(),
                         core::any::type_name::<T>()
                     );
-                    if !self.map.contains_key(&id) {
-                        self.map.insert(id, HashMap::default());
+                    if !self.map.contains_key(id) {
+                        self.map.insert(id.to_string(), HashMap::default());
                     }
                     self.map
-                        .get_mut(&id)
+                        .get_mut(id)
                         .unwrap()
                         .insert(hash_std(name.as_bytes()), Box::new(val));
                 }
@@ -577,7 +586,7 @@ macro_rules! create_serde_registry_for_trait {
                 where
                     T: $trait_name,
                 {
-                    self.map.contains_key(&unpack_type_id(TypeId::of::<T>()))
+                    self.map.contains_key(core::any::type_name::<T>())
                 }
 
                 /// Returns if the element by a given `name` is contained in this map.
@@ -587,7 +596,7 @@ macro_rules! create_serde_registry_for_trait {
                 where
                     T: $trait_name,
                 {
-                    match self.map.get(&unpack_type_id(TypeId::of::<T>())) {
+                    match self.map.get(core::any::type_name::<T>()) {
                         None => false,
                         Some(h) => h.contains_key(&hash_std(name.as_bytes())),
                     }
@@ -617,7 +626,7 @@ macro_rules! create_serde_registry_for_trait {
             {
                 use serde::ser::SerializeSeq;
 
-                let id = $crate::anymap::unpack_type_id(self.type_id());
+                let id = core::any::type_name::<Self>();
                 let mut seq = se.serialize_seq(Some(2))?;
                 seq.serialize_element(&id)?;
                 seq.serialize_element(&$crate::serdeany::Wrap(self))?;

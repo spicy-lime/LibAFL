@@ -17,7 +17,7 @@ features = ["document-features"]
 all-features = true
 
 [features]
-default = ["std", "derive", "llmp_compression", "llmp_small_maps", "rand_trait", "prelude", "gzip", "serdeany_autoreg", "alloc", "xxh3"]
+default = ["std", "derive", "llmp_compression", "llmp_small_maps", "rand_trait", "prelude", "gzip", "serdeany_autoreg", "alloc", "xxh3", "unsafe_stable_serialization"]
 document-features = ["dep:document-features"]
 
 #! # Feature Flags
@@ -65,6 +65,14 @@ xxh3 = ["xxhash-rust"]
 
 ## Automatically register all `#[derive(SerdeAny)]` types at startup.
 serdeany_autoreg = ["ctor"]
+
+## Replace the compile-time dependent use of `type_id` with [`type_name`](https://doc.rust-lang.org/std/any/fn.type_name.html)
+## While it may work, and should lead to stable serialized states for multiple compilations (at least when using the same compiler version), it is very unsafe.
+## The `type_name` of multiple different types could be the same, according to the docs,
+## also, the `type_name` of the same type could be different!
+## This may lead to *type confusions in otherwise safe rust* code
+## Handle with **absolute** care!
+unsafe_stable_serialization = []
 
 
 #! ### LLMP features

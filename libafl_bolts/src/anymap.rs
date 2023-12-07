@@ -121,7 +121,7 @@ macro_rules! create_anymap_for_trait {
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
                     self.map
-                        .get(&unpack_type_id(TypeId::of::<T>()))
+                        .get(core::any::type_name::<T>())
                         .map(|x| x.as_ref().as_any().downcast_ref::<T>().unwrap())
                 }
 
@@ -133,7 +133,7 @@ macro_rules! create_anymap_for_trait {
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
                     self.map
-                        .get_mut(&unpack_type_id(TypeId::of::<T>()))
+                        .get_mut(core::any::type_name::<T>())
                         .map(|x| x.as_mut().as_any_mut().downcast_mut::<T>().unwrap())
                 }
 
@@ -145,7 +145,7 @@ macro_rules! create_anymap_for_trait {
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
                     self.map
-                        .remove(&unpack_type_id(TypeId::of::<T>()))
+                        .remove(core::any::type_name::<T>())
                         .map(|x| x.as_any_boxed().downcast::<T>().unwrap())
                 }
 
@@ -156,7 +156,7 @@ macro_rules! create_anymap_for_trait {
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
                     self.map
-                        .insert(unpack_type_id(TypeId::of::<T>()), Box::new(t));
+                        .insert(core::any::type_name::<T>(), Box::new(t));
                 }
 
                 /// Insert a boxed element into the map.
@@ -165,7 +165,7 @@ macro_rules! create_anymap_for_trait {
                 where
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
-                    self.map.insert(unpack_type_id(TypeId::of::<T>()), t);
+                    self.map.insert(core::any::type_name::<T>(), t);
                 }
 
                 /// Returns the count of elements in this map.
@@ -188,7 +188,7 @@ macro_rules! create_anymap_for_trait {
                 where
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
-                    self.map.contains_key(&unpack_type_id(TypeId::of::<T>()))
+                    self.map.contains_key(core::any::type_name::<T>())
                 }
 
                 /// Create a new [`AnyMap`].
@@ -217,7 +217,7 @@ macro_rules! create_anymap_for_trait {
                 where
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
-                    match self.map.get(&unpack_type_id(TypeId::of::<T>())) {
+                    match self.map.get(core::any::type_name::<T>()) {
                         None => None,
                         Some(h) => h
                             .get(&xxhash_rust::xxh3::xxh3_64(name.as_bytes()))
@@ -245,7 +245,7 @@ macro_rules! create_anymap_for_trait {
                 where
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
-                    match self.map.get_mut(&unpack_type_id(TypeId::of::<T>())) {
+                    match self.map.get_mut(core::any::type_name::<T>()) {
                         None => None,
                         Some(h) => h
                             .get_mut(&xxhash_rust::xxh3::xxh3_64(name.as_bytes()))
@@ -285,7 +285,7 @@ macro_rules! create_anymap_for_trait {
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
                     #[allow(clippy::manual_map)]
-                    match self.map.get(&unpack_type_id(TypeId::of::<T>())) {
+                    match self.map.get(core::any::type_name::<T>()) {
                         None => None,
                         Some(h) => {
                             Some(h.values().map(|x| x.as_any().downcast_ref::<T>().unwrap()))
@@ -328,7 +328,7 @@ macro_rules! create_anymap_for_trait {
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
                     #[allow(clippy::manual_map)]
-                    match self.map.get_mut(&unpack_type_id(TypeId::of::<T>())) {
+                    match self.map.get_mut(core::any::type_name::<T>()) {
                         None => None,
                         Some(h) => Some(
                             h.values_mut()
@@ -365,19 +365,19 @@ macro_rules! create_anymap_for_trait {
                     Keys<'_, u64, HashMap<u64, Box<dyn $trait_name $(< $( $lt ),+ >)?>>>,
                     fn(&u64) -> TypeId,
                 > {
-                    self.map.keys().map(|x| pack_type_id(*x))
+                    self.map.keys().map(|x| x)
                 }
 
                 /// Run `func` for each element in this map.
                 #[inline]
                 #[allow(unused_qualifications)]
-                pub fn for_each<F: FnMut(&TypeId, &Box<dyn $trait_name $(< $( $lt ),+ >)?>) -> Result<(), Error>>(
+                pub fn for_each<F: FnMut(&'static str, &Box<dyn $trait_name $(< $( $lt ),+ >)?>) -> Result<(), Error>>(
                     &self,
                     func: &mut F,
                 ) -> Result<(), Error> {
                     for (id, h) in self.map.iter() {
                         for x in h.values() {
-                            func(&pack_type_id(*id), x)?;
+                            func(id, x)?;
                         }
                     }
                     Ok(())
@@ -385,13 +385,13 @@ macro_rules! create_anymap_for_trait {
 
                 /// Run `func` for each element in this map, getting a mutable borrow.
                 #[inline]
-                pub fn for_each_mut<F: FnMut(&TypeId, &mut Box<dyn $trait_name $(< $( $lt ),+ >)?>) -> Result<(), Error>>(
+                pub fn for_each_mut<F: FnMut(&'static str, &mut Box<dyn $trait_name $(< $( $lt ),+ >)?>) -> Result<(), Error>>(
                     &mut self,
                     func: &mut F,
                 ) -> Result<(), Error> {
                     for (id, h) in self.map.iter_mut() {
                         for x in h.values_mut() {
-                            func(&pack_type_id(*id), x)?;
+                            func(id, x)?;
                         }
                     }
                     Ok(())
@@ -431,7 +431,7 @@ macro_rules! create_anymap_for_trait {
                 where
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
-                    self.map.contains_key(&unpack_type_id(TypeId::of::<T>()))
+                    self.map.contains_key(core::any::type_name::<T>())
                 }
 
                 /// Returns if the element by a given `name` is contained in this map.
@@ -441,7 +441,7 @@ macro_rules! create_anymap_for_trait {
                 where
                     T: $trait_name $(< $( $lt ),+ >)?,
                 {
-                    match self.map.get(&unpack_type_id(TypeId::of::<T>())) {
+                    match self.map.get(core::any::type_name::<T>()) {
                         None => false,
                         Some(h) => h.contains_key(&xxhash_rust::xxh3::xxh3_64(name.as_bytes())),
                     }
