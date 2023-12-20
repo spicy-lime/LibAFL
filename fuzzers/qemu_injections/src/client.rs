@@ -1,5 +1,6 @@
-use std::sync::OnceLock;
-use std::{env, ffi::CStr, fs::File, io::Read, ops::Range, os::raw::c_char, path::Path};
+use std::{
+    env, ffi::CStr, fs::File, io::Read, ops::Range, os::raw::c_char, path::Path, sync::OnceLock,
+};
 
 use libafl::{
     corpus::{InMemoryOnDiskCorpus, OnDiskCorpus},
@@ -57,7 +58,12 @@ struct InjectStructure {
     tests: Vec<Test>,
 }
 
-static INJECTIONS: OnceLock<Vec<InjectStructure>> = OnceLock::new();
+struct Injections {
+    vec: Vec<InjectStructure>,
+    tests: Vec<Vec<u8>>,
+}
+
+static INJECTIONS: OnceLock<Injections> = OnceLock::new();
 pub static TOKENS: OnceLock<Vec<String>> = OnceLock::new();
 
 fn parse_yaml<P: AsRef<Path>>(path: P) -> Result<Vec<InjectStructure>, Box<dyn std::error::Error>> {
@@ -69,9 +75,7 @@ fn parse_yaml<P: AsRef<Path>>(path: P) -> Result<Vec<InjectStructure>, Box<dyn s
 }
 
 #[derive(Default, Debug)]
-struct QemuExecSyscallHelper {
-    // foo
-}
+struct QemuExecSyscallHelper;
 
 impl QemuExecSyscallHelper {
     fn new() -> Self {
@@ -272,6 +276,7 @@ impl<'a> Client<'a> {
         log::debug!("start_pc @ {start_pc:#x}");
 
         let injections = parse_yaml(self.options.get_yaml_file()).unwrap();
+
         INJECTIONS
             .set(injections)
             .expect("Failed to set injections");
@@ -416,7 +421,7 @@ impl<'a> Client<'a> {
             let query = unsafe {
                 let c_str_ptr = reg as *const c_char;
                 let c_str = CStr::from_ptr(c_str_ptr);
-                c_str.to_string_lossy()
+                c_str.to_bytes().to_ascii_lowercase()
             };
 
             //println!("query={}", query);
@@ -425,13 +430,18 @@ impl<'a> Client<'a> {
             //println!("Checking {}", injection.name);
             for test in &injection.tests {
                 if query
-                    .to_lowercase()
-                    .contains(&test.match_value.to_lowercase())
-                {
+                for window in haystack.windows(needle.len()) {
+                    if window == needle {
                     panic!(
                         "Found value \"{}\" for {} in {}",
                         test.match_value, query, injection.name
                     );
+                    }
+                }
+                    
+
+                    .contains(test.match_value.as_bytes().to_ascii_lowercase())
+                {
                 }
             }
         }

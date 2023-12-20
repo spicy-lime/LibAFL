@@ -66,7 +66,7 @@ impl Fuzzer {
                 println!("{s}");
 
                 if let Some(log) = &log {
-                    writeln!(log.borrow_mut(), "{:?} {}", current_time(), s).unwrap();
+                    writeln!(log.borrow_mut(), "{:?} {s}", current_time()).unwrap();
                 }
             });
             self.launch(monitor)
