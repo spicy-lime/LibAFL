@@ -2,10 +2,11 @@ use std::{env, ops::Range};
 
 use libafl::{
     corpus::{InMemoryOnDiskCorpus, OnDiskCorpus},
-    events::EventManager,
+    events::{EventFirer, EventManager, EventProcessor, EventRestarter, ProgressReporter},
     inputs::BytesInput,
-    state::{HasExecutions, HasLastReportTime, HasMetadata, StdState},
-    Error,
+    stages::StagesTuple,
+    state::{HasExecutions, HasLastReportTime, HasMetadata, StdState, UsesState},
+    Error, Evaluator, Fuzzer,
 };
 use libafl_bolts::{
     core_affinity::CoreId, rands::StdRand, shmem::StdShMemProvider, tuples::tuple_list,
@@ -101,14 +102,22 @@ impl<'a> Client<'a> {
         }
     }
 
-    pub fn run<E, M: EventManager<E, Z>, Z>(
+    pub fn run<E, M, ST, Z>(
         &self,
         state: Option<ClientState>,
         mgr: M,
         core_id: CoreId,
     ) -> Result<(), Error>
     where
-        M::State: HasMetadata + HasExecutions + HasLastReportTime,
+        E: UsesState<State = ClientState>,
+        M: UsesState<State = ClientState>
+            + EventFirer
+            + EventRestarter
+            + ProgressReporter
+            + UsesState<State = ClientState>
+            + EventProcessor<E, Z>,
+        Z: Fuzzer<E, M, ST> + UsesState<State = ClientState> + Evaluator<E, M, State = ClientState>,
+        ST: StagesTuple<E, M, ClientState, Z>,
     {
         let mut args = self.args()?;
         log::debug!("ARGS: {:#?}", args);

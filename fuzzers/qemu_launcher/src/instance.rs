@@ -1,9 +1,11 @@
-use core::ptr::addr_of_mut;
+use core::{marker::PhantomData, ptr::addr_of_mut};
 use std::process;
 
 use libafl::{
     corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
-    events::{EventFirer, EventRestarter, LlmpRestartingEventManager, ProgressReporter},
+    events::{
+        EventFirer, EventProcessor, EventRestarter, LlmpRestartingEventManager, ProgressReporter,
+    },
     executors::{ShadowExecutor, TimeoutExecutor},
     feedback_or, feedback_or_fast,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback, TimeoutFeedback},
@@ -21,7 +23,7 @@ use libafl::{
         calibrate::CalibrationStage, power::StdPowerMutationalStage, ShadowTracingStage,
         StagesTuple, StdMutationalStage,
     },
-    state::{HasCorpus, HasMetadata, StdState, UsesState},
+    state::{HasCorpus, HasExecutions, HasLastReportTime, HasMetadata, StdState, UsesState},
     Error,
 };
 use libafl_bolts::{
@@ -45,17 +47,26 @@ pub type ClientState =
     StdState<BytesInput, InMemoryOnDiskCorpus<BytesInput>, StdRand, OnDiskCorpus<BytesInput>>;
 
 #[derive(TypedBuilder)]
-pub struct Instance<'a, M> {
+pub struct Instance<'a, E, M, ST, Z> {
     options: &'a FuzzerOptions,
     emu: &'a Emulator,
     mgr: M,
     core_id: CoreId,
     extra_tokens: Option<Vec<String>>,
+    #[builder(default)]
+    phantom: PhantomData<(E, ST, Z)>,
 }
 
-impl<'a, M> Instance<'a, M>
+impl<'a, E, M, ST, Z> Instance<'a, E, M, ST, Z>
 where
-    M: EventFirer + EventRestarter,
+    E: UsesState<State = ClientState>,
+    M: EventFirer
+        + EventRestarter
+        + ProgressReporter
+        + UsesState<State = ClientState>
+        + EventProcessor<E, Z>,
+    Z: Fuzzer<E, M, ST> + UsesState<State = ClientState> + Evaluator<E, M, State = ClientState>,
+    ST: StagesTuple<E, M, ClientState, Z>,
 {
     pub fn run<QT>(&mut self, helpers: QT, state: Option<ClientState>) -> Result<(), Error>
     where
@@ -204,19 +215,13 @@ where
         }
     }
 
-    fn fuzz<Z, E, ST>(
+    fn fuzz(
         &mut self,
         state: &mut ClientState,
         fuzzer: &mut Z,
         executor: &mut E,
         stages: &mut ST,
-    ) -> Result<(), Error>
-    where
-        M: ProgressReporter + UsesState<State = ClientState>,
-        Z: Fuzzer<E, M, ST> + UsesState<State = ClientState> + Evaluator<E, M, State = ClientState>,
-        E: UsesState<State = ClientState>,
-        ST: StagesTuple<E, M, ClientState, Z>,
-    {
+    ) -> Result<(), Error> {
         let corpus_dirs = [self.options.input_dir()];
 
         if state.must_load_initial_inputs() {

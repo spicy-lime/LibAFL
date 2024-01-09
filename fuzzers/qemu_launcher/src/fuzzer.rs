@@ -10,6 +10,7 @@ use libafl::events::SimpleEventManager;
 #[cfg(not(feature = "simplemgr"))]
 use libafl::events::{EventConfig, Launcher};
 use libafl::{
+    events::LlmpRestartingEventManager,
     monitors::{
         tui::{ui::TuiUI, TuiMonitor},
         Monitor, MultiMonitor,
@@ -22,6 +23,7 @@ use libafl_bolts::{
     current_time,
     shmem::{ShMemProvider, StdShMemProvider},
 };
+use libafl_qemu::QemuExecutor;
 #[cfg(unix)]
 use {
     nix::unistd::dup,
@@ -110,7 +112,11 @@ impl Fuzzer {
             .broker_port(self.options.port)
             .configuration(EventConfig::from_build_id())
             .monitor(monitor)
-            .run_client(|s, m, c| client.run(s, m, c))
+            .run_client(|s, m, c| {
+                client.run::<QemuExecutor<_, _, _, _>, LlmpRestartingEventManager<ClientState, StdShMemProvider>, _, _>(
+                    s, m, c,
+                )
+            })
             .cores(&self.options.cores)
             .stdout_file(stdout)
             .stderr_file(stdout)
