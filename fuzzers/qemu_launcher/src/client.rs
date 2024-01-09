@@ -2,9 +2,9 @@ use std::{env, ops::Range};
 
 use libafl::{
     corpus::{InMemoryOnDiskCorpus, OnDiskCorpus},
-    events::LlmpRestartingEventManager,
+    events::EventManager,
     inputs::BytesInput,
-    state::StdState,
+    state::{HasExecutions, HasLastReportTime, HasMetadata, StdState},
     Error,
 };
 use libafl_bolts::{
@@ -101,12 +101,15 @@ impl<'a> Client<'a> {
         }
     }
 
-    pub fn run(
+    pub fn run<E, M: EventManager<E, Z>, Z>(
         &self,
         state: Option<ClientState>,
-        mgr: LlmpRestartingEventManager<ClientState, StdShMemProvider>,
+        mgr: M,
         core_id: CoreId,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        M::State: HasMetadata + HasExecutions + HasLastReportTime,
+    {
         let mut args = self.args()?;
         log::debug!("ARGS: {:#?}", args);
 

@@ -5,14 +5,19 @@ use std::{
 };
 
 use clap::Parser;
+#[cfg(feature = "simplemgr")]
+use libafl::events::SimpleEventManager;
+#[cfg(not(feature = "simplemgr"))]
+use libafl::events::{EventConfig, Launcher};
 use libafl::{
-    events::{EventConfig, Launcher},
     monitors::{
         tui::{ui::TuiUI, TuiMonitor},
         Monitor, MultiMonitor,
     },
     Error,
 };
+#[cfg(feature = "simplemgr")]
+use libafl_bolts::core_affinity::CoreId;
 use libafl_bolts::{
     current_time,
     shmem::{ShMemProvider, StdShMemProvider},
@@ -23,7 +28,10 @@ use {
     std::os::unix::io::{AsRawFd, FromRawFd},
 };
 
-use crate::{client::Client, options::FuzzerOptions};
+use crate::{
+    client::{Client, ClientState},
+    options::FuzzerOptions,
+};
 
 pub struct Fuzzer {
     options: FuzzerOptions,
@@ -89,7 +97,14 @@ impl Fuzzer {
 
         let client = Client::new(&self.options);
 
+        // If building a simplemgr, we just run the fuzzer directly in this process.
+        #[cfg(feature = "simplemgr")]
+        let mut mgr: SimpleEventManager<_, ClientState> = SimpleEventManager::new(monitor);
+        #[cfg(feature = "simplemgr")]
+        return client.run(None, mgr, CoreId(1));
+
         // Build and run a Launcher
+        #[cfg(not(feature = "simplemgr"))]
         match Launcher::builder()
             .shmem_provider(shmem_provider)
             .broker_port(self.options.port)

@@ -3,7 +3,7 @@ use std::process;
 
 use libafl::{
     corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
-    events::{EventRestarter, LlmpRestartingEventManager},
+    events::{EventFirer, EventRestarter, LlmpRestartingEventManager, ProgressReporter},
     executors::{ShadowExecutor, TimeoutExecutor},
     feedback_or, feedback_or_fast,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback, TimeoutFeedback},
@@ -44,18 +44,19 @@ use crate::{harness::Harness, options::FuzzerOptions};
 pub type ClientState =
     StdState<BytesInput, InMemoryOnDiskCorpus<BytesInput>, StdRand, OnDiskCorpus<BytesInput>>;
 
-pub type ClientMgr = LlmpRestartingEventManager<ClientState, StdShMemProvider>;
-
 #[derive(TypedBuilder)]
-pub struct Instance<'a> {
+pub struct Instance<'a, M> {
     options: &'a FuzzerOptions,
     emu: &'a Emulator,
-    mgr: ClientMgr,
+    mgr: M,
     core_id: CoreId,
     extra_tokens: Option<Vec<String>>,
 }
 
-impl<'a> Instance<'a> {
+impl<'a, M> Instance<'a, M>
+where
+    M: EventFirer + EventRestarter,
+{
     pub fn run<QT>(&mut self, helpers: QT, state: Option<ClientState>) -> Result<(), Error>
     where
         QT: QemuHelperTuple<ClientState>,
@@ -211,11 +212,10 @@ impl<'a> Instance<'a> {
         stages: &mut ST,
     ) -> Result<(), Error>
     where
-        Z: Fuzzer<E, ClientMgr, ST>
-            + UsesState<State = ClientState>
-            + Evaluator<E, ClientMgr, State = ClientState>,
+        M: ProgressReporter + UsesState<State = ClientState>,
+        Z: Fuzzer<E, M, ST> + UsesState<State = ClientState> + Evaluator<E, M, State = ClientState>,
         E: UsesState<State = ClientState>,
-        ST: StagesTuple<E, ClientMgr, ClientState, Z>,
+        ST: StagesTuple<E, M, ClientState, Z>,
     {
         let corpus_dirs = [self.options.input_dir()];
 
