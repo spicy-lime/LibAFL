@@ -7,7 +7,7 @@ use libafl::events::SimpleEventManager;
 use libafl::events::{LlmpRestartingEventManager, MonitorTypedEventManager};
 use libafl::{
     corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
-    events::EventRestarter,
+    events::{EventFirer, EventRestarter, ProgressReporter},
     executors::ShadowExecutor,
     feedback_or, feedback_or_fast,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback, TimeoutFeedback},
@@ -26,7 +26,7 @@ use libafl::{
         calibrate::CalibrationStage, power::StdPowerMutationalStage, ShadowTracingStage,
         StagesTuple, StdMutationalStage,
     },
-    state::{HasCorpus, HasMetadata, StdState, UsesState},
+    state::{HasCorpus, HasMetadata, State, StdState, UsesState},
     Error,
 };
 #[cfg(not(feature = "simplemgr"))]
@@ -53,24 +53,25 @@ pub type ClientState =
 #[cfg(feature = "simplemgr")]
 pub type ClientMgr<M> = SimpleEventManager<M, ClientState>;
 #[cfg(not(feature = "simplemgr"))]
-pub type ClientMgr<M> =
-    MonitorTypedEventManager<LlmpRestartingEventManager<ClientState, StdShMemProvider>, M>;
-
+//pub type ClientMgr<M> =
+//    MonitorTypedEventManager<LlmpRestartingEventManager<ClientState, StdShMemProvider>, M>;
 #[derive(TypedBuilder)]
-pub struct Instance<'a, M: Monitor> {
+pub struct Instance<'a, EM, M: Monitor> {
     options: &'a FuzzerOptions,
     emu: &'a Emulator,
-    mgr: ClientMgr<M>,
+    mgr: EM,
     core_id: CoreId,
     extra_tokens: Option<Vec<String>>,
     #[builder(default=PhantomData)]
     phantom: PhantomData<M>,
 }
 
-impl<'a, M: Monitor> Instance<'a, M> {
-    pub fn run<QT>(&mut self, helpers: QT, state: Option<ClientState>) -> Result<(), Error>
+impl<'a, EM, M: Monitor> Instance<'a, EM, M> {
+    pub fn run<E, QT>(&mut self, helpers: QT, state: Option<ClientState>) -> Result<(), Error>
     where
         QT: QemuHelperTuple<ClientState>,
+        EM: EventFirer + UsesState<State = ClientState> + Evaluator<E, EM> + EventRestarter,
+        E: UsesState<State = ClientState>,
     {
         let mut hooks = QemuHooks::new(self.emu.clone(), helpers);
 
@@ -219,11 +220,17 @@ impl<'a, M: Monitor> Instance<'a, M> {
         stages: &mut ST,
     ) -> Result<(), Error>
     where
-        Z: Fuzzer<E, ClientMgr<M>, ST>
+        Z: Fuzzer<E, EM, ST>
             + UsesState<State = ClientState>
-            + Evaluator<E, ClientMgr<M>, State = ClientState>,
+            + Evaluator<E, EM, State = ClientState>,
+        EM: UsesState<State = ClientState>
+            + ProgressReporter
+            + EventFirer
+            + Evaluator<E, EM>
+            + EventRestarter,
         E: UsesState<State = ClientState>,
-        ST: StagesTuple<E, ClientMgr<M>, ClientState, Z>,
+        ST: StagesTuple<E, EM, ClientState, Z>,
+        E: UsesState<State = ClientState>,
     {
         let corpus_dirs = [self.options.input_dir()];
 

@@ -18,7 +18,7 @@ use libafl::{
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback, TimeoutFeedback},
     fuzzer::{Fuzzer, StdFuzzer},
     inputs::{BytesInput, HasTargetBytes},
-    monitors::{MultiMonitor, OnDiskTOMLMonitor},
+    monitors::{tui::{ui::TuiUI, TuiMonitor}, MultiMonitor, OnDiskTOMLMonitor},
     mutators::{
         scheduled::{havoc_mutations, tokens_mutations, StdScheduledMutator},
         token_mutations::Tokens,
@@ -37,7 +37,7 @@ use libafl_bolts::{
     tuples::{tuple_list, Merge},
     AsSlice,
 };
-use libafl_targets::{libfuzzer_initialize, libfuzzer_test_one_input, std_edges_map_observer};
+use libafl_targets::{autotokens, libfuzzer_initialize, libfuzzer_test_one_input, std_edges_map_observer};
 
 /// Parse a millis string to a [`Duration`]. Used for arg parsing.
 fn timeout_from_millis_str(time: &str) -> Result<Duration, Error> {
@@ -126,9 +126,8 @@ pub extern "C" fn libafl_main() {
 
     let shmem_provider = StdShMemProvider::new().expect("Failed to init shared memory");
 
-    let monitor = OnDiskTOMLMonitor::new(
-        "./fuzzer_stats.toml",
-        MultiMonitor::new(|s| println!("{s}")),
+    let monitor = TuiMonitor::new(
+        TuiUI::new("string".to_string(), false)
     );
 
     let mut run_client = |state: Option<_>, mut restarting_mgr, _core_id| {
@@ -171,15 +170,14 @@ pub extern "C" fn libafl_main() {
 
         println!("We're a client, let's fuzz :)");
 
+
+
         // Create a PNG dictionary if not existing
         if state.metadata_map().get::<Tokens>().is_none() {
-            state.add_metadata(Tokens::from([
-                vec![137, 80, 78, 71, 13, 10, 26, 10], // PNG header
-                "IHDR".as_bytes().to_vec(),
-                "IDAT".as_bytes().to_vec(),
-                "PLTE".as_bytes().to_vec(),
-                "IEND".as_bytes().to_vec(),
-            ]));
+            let tokens = autotokens().unwrap_or_default();
+            state.add_metadata(
+                tokens
+            );
         }
 
         // Setup a basic mutator with a mutational stage

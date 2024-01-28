@@ -100,18 +100,28 @@ impl Fuzzer {
 
         // Build and run a Launcher
         #[cfg(not(feature = "simplemgr"))]
-        match Launcher::builder()
+        let launcher = Launcher::builder()
             .shmem_provider(shmem_provider)
             .broker_port(self.options.port)
             .configuration(EventConfig::from_build_id())
             .monitor(monitor)
-            .run_client(|s, m, c| client.run(s, MonitorTypedEventManager::<_, M>::new(m), c))
+            .run_client(|s, m, c| client.run(s, m, c))
             .cores(&self.options.cores)
             .stdout_file(stdout)
             .stderr_file(stdout)
-            .build()
-            .launch()
-        {
+            .build();
+
+        /*if std::env::var("LAUNCH").is_ok() {
+            match launcher.launch() {
+                Ok(()) => Ok(()),
+                Err(Error::ShuttingDown) => {
+                    println!("Fuzzing stopped by user. Good bye.");
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        } else {*/
+        match launcher.debug_client() {
             Ok(()) => Ok(()),
             Err(Error::ShuttingDown) => {
                 println!("Fuzzing stopped by user. Good bye.");
@@ -119,5 +129,6 @@ impl Fuzzer {
             }
             Err(err) => Err(err),
         }
+        //}
     }
 }

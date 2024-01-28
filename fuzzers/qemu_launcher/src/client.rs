@@ -18,10 +18,7 @@ use libafl_qemu::{
     ArchExtras, Emulator, GuestAddr, QemuInstrumentationAddressRangeFilter,
 };
 
-use crate::{
-    instance::{ClientMgr, Instance},
-    options::FuzzerOptions,
-};
+use crate::{instance::Instance, options::FuzzerOptions};
 
 #[allow(clippy::module_name_repetitions)]
 pub type ClientState =
@@ -101,10 +98,10 @@ impl<'a> Client<'a> {
         }
     }
 
-    pub fn run<M: Monitor>(
+    pub fn run<EM, M: Monitor>(
         &self,
         state: Option<ClientState>,
-        mgr: ClientMgr<M>,
+        mgr: EM,
         core_id: CoreId,
     ) -> Result<(), Error> {
         let mut args = self.args()?;

@@ -42,6 +42,7 @@ use typed_builder::TypedBuilder;
 
 #[cfg(all(unix, feature = "std", feature = "fork"))]
 use crate::events::{CentralizedEventManager, CentralizedLlmpEventBroker};
+use crate::state::UsesState;
 #[cfg(feature = "std")]
 use crate::{
     events::{
@@ -52,6 +53,8 @@ use crate::{
     state::{HasExecutions, State},
     Error,
 };
+
+use super::{EventFirer, SimpleEventManager};
 
 /// The (internal) `env` that indicates we're running as client.
 const _AFL_LAUNCHER_CLIENT: &str = "AFL_LAUNCHER_CLIENT";
@@ -70,13 +73,14 @@ const LIBAFL_DEBUG_OUTPUT: &str = "LIBAFL_DEBUG_OUTPUT";
     clippy::ignored_unit_patterns
 )]
 #[derive(TypedBuilder)]
-pub struct Launcher<'a, CF, MT, S, SP>
+pub struct Launcher<'a, CF, EM, MT, S, SP>
 where
-    CF: FnOnce(Option<S>, LlmpRestartingEventManager<S, SP>, CoreId) -> Result<(), Error>,
+    CF: FnOnce(Option<S>, EM, CoreId) -> Result<(), Error>,
     S::Input: 'a,
+    EM: 'a + EventFirer<State = S> + UsesState<State = S>,
     MT: Monitor,
-    SP: ShMemProvider + 'static,
-    S: State + 'a,
+    SP: 'static + ShMemProvider,
+    S: 'a + State,
 {
     /// The ShmemProvider to use
     shmem_provider: SP,
@@ -121,12 +125,13 @@ where
     #[builder(default = true)]
     serialize_state: bool,
     #[builder(setter(skip), default = PhantomData)]
-    phantom_data: PhantomData<(&'a S, &'a SP)>,
+    phantom_data: PhantomData<(&'a EM, &'a S, &'a SP)>,
 }
 
-impl<CF, MT, S, SP> Debug for Launcher<'_, CF, MT, S, SP>
+impl<CF, EM, MT, S, SP> Debug for Launcher<'_, CF, EM, MT, S, SP>
 where
-    CF: FnOnce(Option<S>, LlmpRestartingEventManager<S, SP>, CoreId) -> Result<(), Error>,
+    CF: FnOnce(Option<S>, EM, CoreId) -> Result<(), Error>,
+    EM: EventFirer<State = S> + UsesState<State = S>,
     MT: Monitor + Clone,
     SP: ShMemProvider + 'static,
     S: State,
@@ -145,9 +150,27 @@ where
 }
 
 #[cfg(feature = "std")]
-impl<'a, CF, MT, S, SP> Launcher<'a, CF, MT, S, SP>
+impl<'a, CF, MT, S, SP> Launcher<'a, CF, SimpleEventManager<MT, S>, MT, S, SP>
+where
+    CF: FnOnce(Option<S>, SimpleEventManager<MT, S>, CoreId) -> Result<(), Error>,
+    S::Input: 'a,
+    MT: Monitor + Clone,
+    S: State + HasExecutions,
+    SP: ShMemProvider + 'static,
+{
+    /// Run the client directly, without spawning any processes.
+    /// This can be very handy for debug purposes.
+    pub fn debug_client(&mut self) -> Result<(), Error> {
+        let mgr = SimpleEventManager::new(self.monitor.clone());
+        (self.run_client.take().unwrap())(None, mgr, CoreId(0))
+    }
+}
+
+#[cfg(feature = "std")]
+impl<'a, CF, MT, S, SP> Launcher<'a, CF, LlmpRestartingEventManager<S, SP>, MT, S, SP>
 where
     CF: FnOnce(Option<S>, LlmpRestartingEventManager<S, SP>, CoreId) -> Result<(), Error>,
+    S::Input: 'a,
     MT: Monitor + Clone,
     S: State + HasExecutions,
     SP: ShMemProvider + 'static,
@@ -397,7 +420,7 @@ where
 #[cfg(all(unix, feature = "std", feature = "fork"))]
 #[derive(TypedBuilder)]
 #[allow(clippy::type_complexity, missing_debug_implementations)]
-pub struct CentralizedLauncher<'a, CF, MT, S, SP>
+pub struct CentralizedLauncher<'a, CF, EM, MT, S, SP>
 where
     CF: FnOnce(
         Option<S>,
@@ -456,11 +479,11 @@ where
     #[builder(default = true)]
     serialize_state: bool,
     #[builder(setter(skip), default = PhantomData)]
-    phantom_data: PhantomData<(&'a S, &'a SP)>,
+    phantom_data: PhantomData<(&'a EM, &'a S, &'a SP)>,
 }
 
 #[cfg(all(unix, feature = "std", feature = "fork"))]
-impl<CF, MT, S, SP> Debug for CentralizedLauncher<'_, CF, MT, S, SP>
+impl<CF, EM, MT, S, SP> Debug for CentralizedLauncher<'_, CF, EM, MT, S, SP>
 where
     CF: FnOnce(
         Option<S>,
@@ -485,7 +508,7 @@ where
 }
 
 #[cfg(all(unix, feature = "std", feature = "fork"))]
-impl<'a, CF, MT, S, SP> CentralizedLauncher<'a, CF, MT, S, SP>
+impl<'a, CF, EM, MT, S, SP> CentralizedLauncher<'a, CF, EM, MT, S, SP>
 where
     CF: FnOnce(
         Option<S>,

@@ -60,7 +60,7 @@ script_runner="@shell"
 script='''
 cd libpng-1.6.37 && CC="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc" CXX="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx" ./configure --enable-shared=no --with-pic=yes --enable-hardware-optimizations=yes
 cd "${PROJECT_DIR}"
-make -C libpng-1.6.37 CC="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc" CXX="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx" LIBTOOL=${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_libtool
+make -C libpng-1.6.37 CC="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc" CXX="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx" LIBTOOL=${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_libtool -j128
 '''
 dependencies = [ "libpng", "cxx", "cc" ]
 
