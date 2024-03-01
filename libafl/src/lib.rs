@@ -3,6 +3,7 @@ Welcome to `LibAFL`
 */
 
 #![allow(incomplete_features)]
+#![feature(build_hasher_simple_hash_one)]
 #![no_std]
 // For `type_eq`
 #![cfg_attr(unstable_feature, feature(specialization))]

@@ -5,6 +5,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(clippy::all)]
 #![deny(clippy::pedantic)]
+#![cfg_attr(nightly, feature(portable_simd))]
 #![allow(
     clippy::unreadable_literal,
     clippy::type_repetition_in_bounds,
@@ -69,9 +70,19 @@ extern crate alloc;
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
-#[cfg(any(feature = "sancov_pcguard_edges", feature = "sancov_pcguard_hitcounts",))]
+#[cfg(any(
+    feature = "sancov_pcguard_edges",
+    feature = "sancov_pcguard_hitcounts",
+    feature = "sancov_ngram4",
+    feature = "sancov_ctx"
+))]
 pub mod sancov_pcguard;
-#[cfg(any(feature = "sancov_pcguard_edges", feature = "sancov_pcguard_hitcounts",))]
+#[cfg(any(
+    feature = "sancov_pcguard_edges",
+    feature = "sancov_pcguard_hitcounts",
+    feature = "sancov_ngram4",
+    feature = "sancov_ctx"
+))]
 pub use sancov_pcguard::*;
 
 #[cfg(any(feature = "sancov_cmplog", feature = "sancov_value_profile"))]

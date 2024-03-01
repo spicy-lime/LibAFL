@@ -22,6 +22,8 @@ pointer_maps = []
 sancov_pcguard_edges = []
 sancov_pcguard_hitcounts = []
 sancov_value_profile = []
+sancov_ngram4 = []
+sancov_ctx = []
 sancov_8bit = []
 sancov_cmplog = []
 sancov_pcguard = ["sancov_pcguard_hitcounts"]
@@ -33,7 +35,7 @@ cc = { version = "1.0", features = ["parallel"] }
 [dependencies]
 libafl = { path = "../libafl", version = "0.10.0", default-features = false, features = [] }
 log = "0.4.17"
-
+rustversion = "1.0"
 rangemap = "1.0"
 serde = { version = "1.0", default-features = false, features = ["alloc"] } # serialization lib
 # serde-big-array = "0.3.2"

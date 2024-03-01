@@ -4,6 +4,7 @@ use std::{env, fs::File, io::Write, path::Path};
 
 #[allow(clippy::too_many_lines)]
 fn main() {
+    println!("cargo:rustc-cfg=nightly");
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let out_dir = out_dir.to_string_lossy().to_string();
     //let out_dir_path = Path::new(&out_dir);

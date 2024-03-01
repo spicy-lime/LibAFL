@@ -40,6 +40,8 @@ pub enum LLVMPasses {
     CoverageAccounting,
     /// The dump cfg pass
     DumpCfg,
+    /// Ctx pass
+    Ctx,
 }
 
 impl LLVMPasses {
@@ -58,6 +60,9 @@ impl LLVMPasses {
                 .join(format!("coverage-accounting-pass.{}", dll_extension())),
             LLVMPasses::DumpCfg => {
                 PathBuf::from(env!("OUT_DIR")).join(format!("dump-cfg-pass.{}", dll_extension()))
+            }
+            LLVMPasses::Ctx => {
+                PathBuf::from(env!("OUT_DIR")).join(format!("ctx-pass.{}", dll_extension()))
             }
         }
     }
