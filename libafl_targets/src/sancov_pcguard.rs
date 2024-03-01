@@ -28,14 +28,27 @@ compile_error!(
 #[rustversion::nightly]
 type Ngram4 = core::simd::u32x4;
 
+#[cfg(feature = "sancov_ngram8")]
+#[rustversion::nightly]
+type Ngram8 = core::simd::u32x8;
+
 /// The array holding the previous locs. This is required for NGRAM-4 instrumentation
 #[cfg(feature = "sancov_ngram4")]
 #[rustversion::nightly]
 pub static mut PREV_ARRAY: Ngram4 = Ngram4::from_array([0, 0, 0, 0]);
 
+#[cfg(feature = "sancov_ngram8")]
+#[rustversion::nightly]
+pub static mut PREV_ARRAY: Ngram8 = Ngram8::from_array([0, 0, 0, 0, 0, 0, 0, 0]);
+
 #[cfg(feature = "sancov_ngram4")]
 #[rustversion::nightly]
 pub static SHR: Ngram4 = Ngram4::from_array([1, 1, 1, 1]);
+
+#[cfg(feature = "sancov_ngram8")]
+#[rustversion::nightly]
+pub static SHR: Ngram8 = Ngram8::from_array([1, 1, 1, 1, 1, 1, 1, 1]);
+
 /// For resetting Ctx
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CtxObserver<S> {
@@ -105,7 +118,10 @@ where
     #[inline]
     fn pre_exec(&mut self, _state: &mut S, _input: &S::Input) -> Result<(), Error> {
         unsafe {
+            #[cfg(feature = "sancov_ngram4")]
             PREV_ARRAY = Ngram4::from_array([0, 0, 0, 0]);
+            #[cfg(feature = "sancov_ngram8")]
+            PREV_ARRAY = Ngram8::from_array([0, 0, 0, 0, 0, 0, 0, 0])
         }
         Ok(())
     }
@@ -122,7 +138,7 @@ where
 }
 
 #[rustversion::nightly]
-#[cfg(feature = "sancov_ngram4")]
+#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8"))]
 unsafe fn update_ngram(mut pos: usize) -> usize {
     PREV_ARRAY = PREV_ARRAY.rotate_lanes_right::<1>();
     PREV_ARRAY.shl_assign(SHR);
@@ -133,7 +149,7 @@ unsafe fn update_ngram(mut pos: usize) -> usize {
 }
 
 #[rustversion::not(nightly)]
-#[cfg(feature = "sancov_ngram4")]
+#[cfg(feature = "sancov_ngram4", feature = "sancov_ngram8")]
 unsafe fn update_ngram(pos: usize) -> usize {
     pos
 }
@@ -151,7 +167,7 @@ extern "C" {
 #[no_mangle]
 pub unsafe extern "C" fn __sanitizer_cov_trace_pc_guard(guard: *mut u32) {
     let mut pos = *guard as usize;
-    #[cfg(feature = "sancov_ngram4")]
+    #[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8"))]
     {
         pos = update_ngram(pos);
     }
