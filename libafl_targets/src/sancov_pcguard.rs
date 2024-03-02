@@ -2,14 +2,14 @@
 
 #[rustversion::nightly]
 use core::simd::SimdUint;
-#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ctx"))]
+#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8", feature = "sancov_ctx"))]
 use core::{fmt::Debug, marker::PhantomData, ops::ShlAssign};
 
-#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ctx"))]
+#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8", feature = "sancov_ctx"))]
 use libafl::{
     bolts::tuples::Named, executors::ExitKind, inputs::UsesInput, observers::Observer, Error,
 };
-#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ctx"))]
+#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8", feature = "sancov_ctx"))]
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 
 #[cfg(feature = "pointer_maps")]
@@ -117,12 +117,16 @@ where
 {
     #[inline]
     fn pre_exec(&mut self, _state: &mut S, _input: &S::Input) -> Result<(), Error> {
+        #[cfg(feature = "sancov_ngram4")]
         unsafe {
-            #[cfg(feature = "sancov_ngram4")]
             PREV_ARRAY = Ngram4::from_array([0, 0, 0, 0]);
-            #[cfg(feature = "sancov_ngram8")]
+        }
+
+        #[cfg(feature = "sancov_ngram8")]
+        unsafe {
             PREV_ARRAY = Ngram8::from_array([0, 0, 0, 0, 0, 0, 0, 0])
         }
+
         Ok(())
     }
 
@@ -149,7 +153,7 @@ unsafe fn update_ngram(mut pos: usize) -> usize {
 }
 
 #[rustversion::not(nightly)]
-#[cfg(feature = "sancov_ngram4", feature = "sancov_ngram8")]
+#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8"))]
 unsafe fn update_ngram(pos: usize) -> usize {
     pos
 }

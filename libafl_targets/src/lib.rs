@@ -74,6 +74,7 @@ include!(concat!(env!("OUT_DIR"), "/constants.rs"));
     feature = "sancov_pcguard_edges",
     feature = "sancov_pcguard_hitcounts",
     feature = "sancov_ngram4",
+    feature = "sancov_ngram8",
     feature = "sancov_ctx"
 ))]
 pub mod sancov_pcguard;
@@ -81,6 +82,7 @@ pub mod sancov_pcguard;
     feature = "sancov_pcguard_edges",
     feature = "sancov_pcguard_hitcounts",
     feature = "sancov_ngram4",
+    feature = "sancov_ngram8",
     feature = "sancov_ctx"
 ))]
 pub use sancov_pcguard::*;
