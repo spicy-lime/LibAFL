@@ -35,19 +35,19 @@ type Ngram8 = core::simd::u32x8;
 /// The array holding the previous locs. This is required for NGRAM-4 instrumentation
 #[cfg(feature = "sancov_ngram4")]
 #[rustversion::nightly]
-pub static mut PREV_ARRAY: Ngram4 = Ngram4::from_array([0, 0, 0, 0]);
+pub static mut PREV_ARRAY_4: Ngram4 = Ngram4::from_array([0, 0, 0, 0]);
 
 #[cfg(feature = "sancov_ngram8")]
 #[rustversion::nightly]
-pub static mut PREV_ARRAY: Ngram8 = Ngram8::from_array([0, 0, 0, 0, 0, 0, 0, 0]);
+pub static mut PREV_ARRAY_8: Ngram8 = Ngram8::from_array([0, 0, 0, 0, 0, 0, 0, 0]);
 
 #[cfg(feature = "sancov_ngram4")]
 #[rustversion::nightly]
-pub static SHR: Ngram4 = Ngram4::from_array([1, 1, 1, 1]);
+pub static SHR_4: Ngram4 = Ngram4::from_array([1, 1, 1, 1]);
 
 #[cfg(feature = "sancov_ngram8")]
 #[rustversion::nightly]
-pub static SHR: Ngram8 = Ngram8::from_array([1, 1, 1, 1, 1, 1, 1, 1]);
+pub static SHR_8: Ngram8 = Ngram8::from_array([1, 1, 1, 1, 1, 1, 1, 1]);
 
 /// For resetting Ctx
 #[derive(Debug, Serialize, Deserialize)]
@@ -119,12 +119,12 @@ where
     fn pre_exec(&mut self, _state: &mut S, _input: &S::Input) -> Result<(), Error> {
         #[cfg(feature = "sancov_ngram4")]
         unsafe {
-            PREV_ARRAY = Ngram4::from_array([0, 0, 0, 0]);
+            PREV_ARRAY_4 = Ngram4::from_array([0, 0, 0, 0]);
         }
 
         #[cfg(feature = "sancov_ngram8")]
         unsafe {
-            PREV_ARRAY = Ngram8::from_array([0, 0, 0, 0, 0, 0, 0, 0])
+            PREV_ARRAY_8 = Ngram8::from_array([0, 0, 0, 0, 0, 0, 0, 0])
         }
 
         Ok(())
@@ -142,12 +142,22 @@ where
 }
 
 #[rustversion::nightly]
-#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8"))]
 unsafe fn update_ngram(mut pos: usize) -> usize {
-    PREV_ARRAY = PREV_ARRAY.rotate_lanes_right::<1>();
-    PREV_ARRAY.shl_assign(SHR);
-    PREV_ARRAY.as_mut_array()[0] = pos as u32;
-    let mut reduced = PREV_ARRAY.reduce_xor() as usize;
+    let mut reduced = pos;
+    #[cfg(feature = "sancov_ngram4")]
+    {
+        PREV_ARRAY_4 = PREV_ARRAY_4.rotate_lanes_right::<1>();
+        PREV_ARRAY_4.shl_assign(SHR_4);
+        PREV_ARRAY_4.as_mut_array()[0] = pos as u32;
+        let mut reduced = PREV_ARRAY_4.reduce_xor() as usize;
+    }
+    #[cfg(feature = "sancov_ngram8")]
+    {
+        PREV_ARRAY_8 = PREV_ARRAY_8.rotate_lanes_right::<1>();
+        PREV_ARRAY_8.shl_assign(SHR_8);
+        PREV_ARRAY_8.as_mut_array()[0] = pos as u32;
+        let mut reduced = PREV_ARRAY_8.reduce_xor() as usize;
+    }
     reduced %= EDGES_MAP_SIZE;
     reduced
 }
