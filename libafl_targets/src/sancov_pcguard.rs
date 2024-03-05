@@ -49,29 +49,32 @@ pub static SHR_4: Ngram4 = Ngram4::from_array([1, 1, 1, 1]);
 #[rustversion::nightly]
 pub static SHR_8: Ngram8 = Ngram8::from_array([1, 1, 1, 1, 1, 1, 1, 1]);
 
+#[cfg(feature = "sancov_ctx")]
 /// For resetting Ctx
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CtxObserver<S> {
     phantom: PhantomData<S>,
 }
-
+#[cfg(feature = "sancov_ctx")]
 impl<S> Named for CtxObserver<S> {
     fn name(&self) -> &str {
         "ctx"
     }
 }
 
+#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8"))]
 /// For resetting Ngram
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NgramObserver<S> {
     phantom: PhantomData<S>,
 }
+#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8"))]
 impl<S> Named for NgramObserver<S> {
     fn name(&self) -> &str {
         "ngram"
     }
 }
-
+#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8"))]
 impl<S> NgramObserver<S> {
     pub fn new() -> Self {
         Self {
@@ -79,7 +82,7 @@ impl<S> NgramObserver<S> {
         }
     }
 }
-
+#[cfg(feature = "sancov_ctx")]
 impl<S> CtxObserver<S> {
     pub fn new() -> Self {
         Self {
@@ -87,7 +90,7 @@ impl<S> CtxObserver<S> {
         }
     }
 }
-
+#[cfg(feature = "sancov_ctx")]
 impl<S> Observer<S> for CtxObserver<S>
 where
     S: UsesInput + Debug,
@@ -110,7 +113,7 @@ where
         Ok(())
     }
 }
-
+#[cfg(any(feature = "sancov_ngram4", feature = "sancov_ngram8"))]
 impl<S> Observer<S> for NgramObserver<S>
 where
     S: UsesInput + Debug,
