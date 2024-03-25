@@ -3,7 +3,7 @@
 uint8_t *__afl_area_ptr;
 uint8_t *__afl_acc_memop_ptr;
 
-void __libafl_targets_cmplog_instructions(uintptr_t k, uint8_t shape,
+inline void __libafl_targets_cmplog_instructions(uintptr_t k, uint8_t shape,
                                           uint64_t arg1, uint64_t arg2) {
   (void)k;
   (void)shape;

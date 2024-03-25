@@ -102,7 +102,7 @@ class DumpCfgPass : public ModulePass {
  private:
   bool isLLVMIntrinsicFn(StringRef &n) {
     // Not interested in these LLVM's functions
-    if (n.startswith("llvm.")) {
+    if (n.starts_with("llvm.")) {
       return true;
     } else {
       return false;
