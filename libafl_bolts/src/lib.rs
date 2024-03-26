@@ -812,7 +812,7 @@ pub fn current_nanos() -> u64 {
 /// Gets current milliseconds since [`UNIX_EPOCH`]
 #[must_use]
 #[inline]
-pub fn current_milliseconds() -> u64 {
+pub fn current_millis() -> u64 {
     current_time().as_millis() as u64
 }
 

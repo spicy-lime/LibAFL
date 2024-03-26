@@ -100,12 +100,13 @@ use crate::os::unix_signals::{siginfo_t, ucontext_t, Handler, Signal};
 #[cfg(all(windows, feature = "std"))]
 use crate::os::windows_exceptions::{setup_ctrl_handler, CtrlHandler};
 use crate::{
+    current_millis,
     shmem::{ShMem, ShMemDescription, ShMemId, ShMemProvider},
     ClientId, Error,
 };
 
 /// The default timeout in seconds after which a client will be considered stale, and removed.
-pub const DEFAULT_CLIENT_TIMEOUT_SECS: Duration = Duration::from_secs(7200);
+pub const DEFAULT_CLIENT_TIMEOUT_SECS: Duration = Duration::from_secs(5 * 60);
 
 /// The max number of pages a [`client`] may have mapped that were not yet read by the [`broker`]
 /// Usually, this value should not exceed `1`, else the broker cannot keep up with the amount of incoming messages.
@@ -598,8 +599,10 @@ unsafe fn _llmp_next_msg_ptr(last_msg: *const LlmpMsg) -> *mut LlmpMsg {
 pub struct LlmpDescription {
     /// Info about the [`ShMem`] in use
     shmem: ShMemDescription,
-    /// The last message sent or received, depnding on page type
+    /// The last message sent or received, depending on page type
     last_message_offset: Option<u64>,
+    /// The send timeout we use (unused for receiver atm)
+    send_timeout: Duration,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -695,21 +698,22 @@ where
 {
     #[cfg(feature = "std")]
     /// Creates either a broker, if the tcp port is not bound, or a client, connected to this port.
-    pub fn on_port(shmem_provider: SP, port: u16, client_timeout: Duration) -> Result<Self, Error> {
+    pub fn on_port(shmem_provider: SP, client_timeout: Duration, port: u16) -> Result<Self, Error> {
         match tcp_bind(port) {
             Ok(listener) => {
                 // We got the port. We are the broker! :)
                 log::info!("We're the broker");
 
                 let mut broker = LlmpBroker::new(shmem_provider, client_timeout)?;
-                let _listener_thread = broker.launch_listener(Listener::Tcp(listener))?;
+                let _listener_thread =
+                    broker.launch_listener(client_timeout, Listener::Tcp(listener))?;
                 Ok(LlmpConnection::IsBroker { broker })
             }
             Err(Error::OsError(e, ..)) if e.kind() == ErrorKind::AddrInUse => {
                 // We are the client :)
                 log::info!("We're the client (internal port already bound by broker, {e:#?})");
                 Ok(LlmpConnection::IsClient {
-                    client: LlmpClient::create_attach_to_tcp(shmem_provider, port)?,
+                    client: LlmpClient::create_attach_to_tcp(shmem_provider, client_timeout, port)?,
                 })
             }
             Err(e) => {
@@ -723,19 +727,23 @@ where
     #[cfg(feature = "std")]
     pub fn broker_on_port(
         shmem_provider: SP,
-        port: u16,
         client_timeout: Duration,
+        port: u16,
     ) -> Result<Self, Error> {
         Ok(LlmpConnection::IsBroker {
-            broker: LlmpBroker::create_attach_to_tcp(shmem_provider, port, client_timeout)?,
+            broker: LlmpBroker::create_attach_to_tcp(shmem_provider, client_timeout, port)?,
         })
     }
 
     /// Creates a new client on the given port
     #[cfg(feature = "std")]
-    pub fn client_on_port(shmem_provider: SP, port: u16) -> Result<Self, Error> {
+    pub fn client_on_port(
+        shmem_provider: SP,
+        send_timeout: Duration,
+        port: u16,
+    ) -> Result<Self, Error> {
         Ok(LlmpConnection::IsClient {
-            client: LlmpClient::create_attach_to_tcp(shmem_provider, port)?,
+            client: LlmpClient::create_attach_to_tcp(shmem_provider, send_timeout, port)?,
         })
     }
 
@@ -860,8 +868,12 @@ where
     keep_pages_forever: bool,
     /// True, if we allocatd a message, but didn't call [`Self::send()`] yet
     has_unsent_message: bool,
-    /// The sharedmem provider to get new sharaed maps if we're full
+    /// The sharedmem provider to get new shared maps if we're full
     shmem_provider: SP,
+    /// The timestamp (in millis) since the last time we sent a message (for timeout handling)
+    last_send_time: u64,
+    /// The maximum time (in millis) we are allowed to wait between sending messages (before the receiver gives up)
+    send_timeout: u64,
 }
 
 /// An actor on the sending part of the shared map
@@ -874,6 +886,7 @@ where
     /// If it is `false`, the pages will be unmapped once they are full, and have been mapped by at least one `LlmpReceiver`.
     pub fn new(
         mut shmem_provider: SP,
+        send_timeout: Duration,
         id: ClientId,
         keep_pages_forever: bool,
     ) -> Result<Self, Error> {
@@ -895,6 +908,8 @@ where
             has_unsent_message: false,
             shmem_provider,
             unused_shmem_cache: vec![],
+            last_send_time: current_millis(),
+            send_timeout: u64::try_from(send_timeout.as_millis())?,
         })
     }
 
@@ -1013,6 +1028,7 @@ where
     /// else reattach will get a new, empty page, from the OS, or fail.
     pub fn on_existing_shmem(
         shmem_provider: SP,
+        send_timeout: Duration,
         current_out_shmem: SP::ShMem,
         last_msg_sent_offset: Option<u64>,
     ) -> Result<Self, Error> {
@@ -1038,6 +1054,8 @@ where
             has_unsent_message: false,
             shmem_provider,
             unused_shmem_cache: vec![],
+            last_send_time: current_millis(),
+            send_timeout: u64::try_from(send_timeout.as_millis())?,
         })
     }
 
@@ -1214,6 +1232,16 @@ where
             "No tag set on message with id {:?}",
             (*msg).message_id
         );
+
+        let current_send_time = current_millis();
+        if self.last_send_time >= current_send_time + self.send_timeout {
+            return Err(Error::illegal_state(format!(
+                "We did not send a message in the timeout of {} seconds",
+                self.send_timeout
+            )));
+        }
+        self.last_send_time = current_send_time;
+
         // A client gets the sender id assigned to by the broker during the initial handshake.
         if overwrite_client_id {
             (*msg).sender = self.id;
@@ -1234,6 +1262,7 @@ where
 
         self.last_msg_sent = msg;
         self.has_unsent_message = false;
+
         Ok(())
     }
 
@@ -1496,6 +1525,7 @@ where
         Ok(LlmpDescription {
             shmem: map.shmem.description(),
             last_message_offset,
+            send_timeout: self.send_timeout,
         })
     }
 
@@ -1503,10 +1533,12 @@ where
     /// Acquired with [`self.describe`].
     pub fn on_existing_from_description(
         mut shmem_provider: SP,
+        send_timeout: Duration,
         description: &LlmpDescription,
     ) -> Result<Self, Error> {
         Self::on_existing_shmem(
             shmem_provider.clone(),
+            send_timeout,
             shmem_provider.shmem_from_description(description.shmem)?,
             description.last_message_offset,
         )
@@ -1787,6 +1819,8 @@ where
         Ok(LlmpDescription {
             shmem: map.shmem.description(),
             last_message_offset,
+            // Dummy value - unused for Receiver.
+            send_timeout: Duration::from_secs(0),
         })
     }
 
@@ -1982,6 +2016,7 @@ where
     shmem_provider: SP,
     #[cfg(feature = "std")]
     /// The timeout after which a client will be considered stale, and removed.
+    /// Equals `send_timeout` in the client.
     client_timeout: Duration,
 }
 
@@ -2066,6 +2101,8 @@ where
                 has_unsent_message: false,
                 shmem_provider: shmem_provider.clone(),
                 unused_shmem_cache: vec![],
+                last_send_time: current_millis(),
+                send_timeout: u64::try_from(client_timeout.as_millis())?,
             },
             llmp_clients: vec![],
             clients_to_remove: vec![],
@@ -2096,19 +2133,19 @@ where
     #[cfg(feature = "std")]
     pub fn create_attach_to_tcp(
         shmem_provider: SP,
-        port: u16,
         client_timeout: Duration,
+        port: u16,
     ) -> Result<Self, Error> {
-        Self::with_keep_pages_attach_to_tcp(shmem_provider, port, true, client_timeout)
+        Self::with_keep_pages_attach_to_tcp(shmem_provider, client_timeout, port, true)
     }
 
     /// Create a new [`LlmpBroker`] attaching to a TCP port and telling if it has to keep pages forever
     #[cfg(feature = "std")]
     pub fn with_keep_pages_attach_to_tcp(
         shmem_provider: SP,
+        client_timeout: Duration,
         port: u16,
         keep_pages_forever: bool,
-        client_timeout: Duration,
     ) -> Result<Self, Error> {
         match tcp_bind(port) {
             Ok(listener) => {
@@ -2117,7 +2154,8 @@ where
                     keep_pages_forever,
                     client_timeout,
                 )?;
-                let _listener_thread = broker.launch_listener(Listener::Tcp(listener))?;
+                let _listener_thread =
+                    broker.launch_listener(client_timeout, Listener::Tcp(listener))?;
                 Ok(broker)
             }
             Err(e) => Err(e),
@@ -2174,7 +2212,7 @@ where
     /// This will spawn a new background thread, registered as client, that proxies all messages to a remote machine.
     /// Returns the description of the new page that still needs to be announced/added to the broker afterwards.
     #[cfg(feature = "std")]
-    pub fn connect_b2b<A>(&mut self, addr: A) -> Result<(), Error>
+    pub fn connect_b2b<A>(&mut self, client_timeout: Duration, addr: A) -> Result<(), Error>
     where
         A: ToSocketAddrs,
     {
@@ -2226,6 +2264,7 @@ where
                 .unwrap()
                 .shmem
                 .description(),
+            client_timeout,
         )?;
 
         let new_shmem = LlmpSharedMap::existing(
@@ -2362,18 +2401,16 @@ where
     ) where
         F: FnMut(Option<(ClientId, Tag, Flags, &[u8])>) -> Result<LlmpMsgHookResult, Error>,
     {
-        use super::current_milliseconds;
-
         #[cfg(any(all(unix, not(miri)), all(windows, feature = "std")))]
         Self::setup_handlers();
 
         let timeout = timeout.as_millis() as u64;
-        let mut end_time = current_milliseconds() + timeout;
+        let mut end_time = current_millis() + timeout;
 
         while !self.is_shutting_down() {
-            if current_milliseconds() > end_time {
+            if current_millis() > end_time {
                 on_new_msg_or_timeout(None).expect("An error occurred in broker timeout. Exiting.");
-                end_time = current_milliseconds() + timeout;
+                end_time = current_millis() + timeout;
             }
 
             if self
@@ -2382,7 +2419,7 @@ where
                 })
                 .expect("An error occurred when brokering. Exiting.")
             {
-                end_time = current_milliseconds() + timeout;
+                end_time = current_millis() + timeout;
             }
 
             if let Some(exit_after_count) = self.exit_cleanly_after {
@@ -2470,11 +2507,15 @@ where
     /// Launches a thread using a tcp listener socket, on which new clients may connect to this broker.
     /// Does so on the given port.
     #[cfg(feature = "std")]
-    pub fn launch_tcp_listener_on(&mut self, port: u16) -> Result<thread::JoinHandle<()>, Error> {
+    pub fn launch_tcp_listener_on(
+        &mut self,
+        send_timeout: Duration,
+        port: u16,
+    ) -> Result<thread::JoinHandle<()>, Error> {
         let listener = tcp_bind(port)?;
         // accept connections and process them, spawning a new thread for each one
         log::info!("Server listening on port {port}");
-        self.launch_listener(Listener::Tcp(listener))
+        self.launch_listener(send_timeout, Listener::Tcp(listener))
     }
 
     /// Announces a new client on the given shared map.
@@ -2509,6 +2550,7 @@ where
         mut stream: TcpStream,
         b2b_client_id: ClientId,
         broker_shmem_description: &ShMemDescription,
+        client_timeout: Duration,
     ) -> Result<ShMemDescription, Error> {
         let broker_shmem_description = *broker_shmem_description;
 
@@ -2528,13 +2570,17 @@ where
                 .set_read_timeout(Some(_LLMP_B2B_BLOCK_TIME))
                 .expect("Failed to set tcp stream timeout");
 
-            let mut new_sender =
-                match LlmpSender::new(shmem_provider_bg.clone(), b2b_client_id, false) {
-                    Ok(new_sender) => new_sender,
-                    Err(e) => {
-                        panic!("B2B: Could not map shared map: {e}");
-                    }
-                };
+            let mut new_sender = match LlmpSender::new(
+                shmem_provider_bg.clone(),
+                client_timeout,
+                b2b_client_id,
+                false,
+            ) {
+                Ok(new_sender) => new_sender,
+                Err(e) => {
+                    panic!("B2B: Could not map shared map: {e}");
+                }
+            };
 
             send.send(new_sender.out_shmems.first().unwrap().shmem.description())
                 .expect("B2B: Error sending map description to channel!");
@@ -2545,6 +2591,7 @@ where
                 &LlmpDescription {
                     last_message_offset: None,
                     shmem: broker_shmem_description,
+                    send_timeout: client_timeout,
                 },
             )
             .expect("Failed to map local page in broker 2 broker thread!");
@@ -2691,9 +2738,12 @@ where
                     return;
                 }
 
-                if let Ok(shmem_description) =
-                    Self::b2b_thread_on(stream, *current_client_id, broker_shmem_description)
-                {
+                if let Ok(shmem_description) = Self::b2b_thread_on(
+                    stream,
+                    *current_client_id,
+                    broker_shmem_description,
+                    Duration::from_millis(sender.send_timeout),
+                ) {
                     if Self::announce_new_client(sender, &shmem_description).is_err() {
                         log::info!("B2B: Error announcing client {shmem_description:?}");
                     };
@@ -2705,7 +2755,11 @@ where
 
     #[cfg(feature = "std")]
     /// Launches a thread using a listener socket, on which new clients may connect to this broker
-    pub fn launch_listener(&mut self, listener: Listener) -> Result<thread::JoinHandle<()>, Error> {
+    pub fn launch_listener(
+        &mut self,
+        send_timeout: Duration,
+        listener: Listener,
+    ) -> Result<thread::JoinHandle<()>, Error> {
         // Later in the execution, after the initial map filled up,
         // the current broacast map will will point to a different map.
         // However, the original map is (as of now) never freed, new clients will start
@@ -2732,6 +2786,8 @@ where
         let tcp_out_shmem_description = tcp_out_shmem.shmem.description();
         let listener_id = self.register_client(tcp_out_shmem);
 
+        let send_timeout = u64::try_from(send_timeout.as_millis())?;
+
         let ret = thread::spawn(move || {
             // Create a new ShMemProvider for this background thread.
             let mut shmem_provider_bg = SP::new().unwrap();
@@ -2751,6 +2807,8 @@ where
                 has_unsent_message: false,
                 shmem_provider: shmem_provider_bg.clone(),
                 unused_shmem_cache: vec![],
+                last_send_time: current_millis(),
+                send_timeout,
             };
 
             loop {
@@ -2967,6 +3025,7 @@ where
     #[allow(clippy::needless_pass_by_value)]
     pub fn on_existing_shmem(
         shmem_provider: SP,
+        send_timeout: Duration,
         _current_out_shmem: SP::ShMem,
         _last_msg_sent_offset: Option<u64>,
         current_broker_shmem: SP::ShMem,
@@ -2980,6 +3039,7 @@ where
             )?,
             sender: LlmpSender::on_existing_shmem(
                 shmem_provider,
+                send_timeout,
                 current_broker_shmem,
                 last_msg_recvd_offset,
             )?,
@@ -3025,6 +3085,7 @@ where
         Ok(Self {
             sender: LlmpSender::on_existing_from_description(
                 shmem_provider.clone(),
+                description.sender.send_timeout,
                 &description.sender,
             )?,
             receiver: LlmpReceiver::on_existing_from_description(
@@ -3082,6 +3143,7 @@ where
     /// Creates a new [`LlmpClient`]
     pub fn new(
         mut shmem_provider: SP,
+        send_timeout: Duration,
         initial_broker_shmem: LlmpSharedMap<SP::ShMem>,
         sender_id: ClientId,
     ) -> Result<Self, Error> {
@@ -3097,6 +3159,8 @@ where
                 has_unsent_message: false,
                 shmem_provider: shmem_provider.clone(),
                 unused_shmem_cache: vec![],
+                last_send_time: current_millis(),
+                send_timeout: u64::try_from(send_timeout.as_millis())?,
             },
 
             receiver: LlmpReceiver {
@@ -3113,8 +3177,12 @@ where
     }
 
     /// Create a point-to-point channel instead of using a broker-client channel
-    pub fn new_p2p(shmem_provider: SP, sender_id: ClientId) -> Result<Self, Error> {
-        let sender = LlmpSender::new(shmem_provider.clone(), sender_id, false)?;
+    pub fn new_p2p(
+        shmem_provider: SP,
+        send_timeout: Duration,
+        sender_id: ClientId,
+    ) -> Result<Self, Error> {
+        let sender = LlmpSender::new(shmem_provider.clone(), send_timeout, sender_id, false)?;
         let receiver = LlmpReceiver::on_existing_shmem(
             shmem_provider,
             sender.out_shmems[0].shmem.clone(),
@@ -3208,15 +3276,23 @@ where
 
     #[cfg(feature = "std")]
     /// Creates a new [`LlmpClient`], reading the map id and len from env
-    pub fn create_using_env(mut shmem_provider: SP, env_var: &str) -> Result<Self, Error> {
+    pub fn create_using_env(
+        mut shmem_provider: SP,
+        send_timeout: Duration,
+        env_var: &str,
+    ) -> Result<Self, Error> {
         let map = LlmpSharedMap::existing(shmem_provider.existing_from_env(env_var)?);
         let client_id = unsafe { (*map.page()).sender_id };
-        Self::new(shmem_provider, map, client_id)
+        Self::new(shmem_provider, send_timeout, map, client_id)
     }
 
     #[cfg(feature = "std")]
     /// Create a [`LlmpClient`], getting the ID from a given port
-    pub fn create_attach_to_tcp(mut shmem_provider: SP, port: u16) -> Result<Self, Error> {
+    pub fn create_attach_to_tcp(
+        mut shmem_provider: SP,
+        send_timeout: Duration,
+        port: u16,
+    ) -> Result<Self, Error> {
         let mut stream = match TcpStream::connect((_LLMP_CONNECT_ADDR, port)) {
             Ok(stream) => stream,
             Err(e) => {
@@ -3253,7 +3329,7 @@ where
         );
 
         // We'll set `sender_id` later
-        let mut ret = Self::new(shmem_provider, map, ClientId(0))?;
+        let mut ret = Self::new(shmem_provider, send_timeout, map, ClientId(0))?;
 
         let client_hello_req = TcpRequest::LocalClientHello {
             shmem_description: ret.sender.out_shmems.first().unwrap().shmem.description(),
@@ -3305,8 +3381,8 @@ mod tests {
         let shmem_provider = StdShMemProvider::new().unwrap();
         let mut broker = match LlmpConnection::on_port(
             shmem_provider.clone(),
-            1337,
             DEFAULT_CLIENT_TIMEOUT_SECS,
+            1337,
         )
         .unwrap()
         {
@@ -3317,8 +3393,8 @@ mod tests {
         // Add the first client (2nd, actually, because of the tcp listener client)
         let mut client = match LlmpConnection::on_port(
             shmem_provider.clone(),
-            1337,
             DEFAULT_CLIENT_TIMEOUT_SECS,
+            1337,
         )
         .unwrap()
         {

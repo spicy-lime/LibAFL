@@ -123,7 +123,7 @@ pub fn main() {
     }
 
     let mut set = HashSet::new();
-    let st = libafl_bolts::current_milliseconds();
+    let st = libafl_bolts::current_millis();
     let mut b = vec![];
     let mut c = 0;
     for _ in 0..100000 {
@@ -132,7 +132,7 @@ pub fn main() {
         set.insert(calculate_hash(&b));
         c += b.len();
     }
-    println!("{} / {}", c, libafl_bolts::current_milliseconds() - st);
+    println!("{} / {}", c, libafl_bolts::current_millis() - st);
     println!("{} / 100000", set.len());
 
     return;
