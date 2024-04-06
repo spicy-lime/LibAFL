@@ -23,7 +23,7 @@ use libafl::{
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback},
     fuzzer::{Fuzzer, StdFuzzer},
     inputs::{BytesInput, HasTargetBytes},
-    monitors::SimpleMonitor,
+    monitors::tui::{ui::TuiUI, TuiMonitor}, //SimpleMonitor,
     mutators::{
         scheduled::havoc_mutations, token_mutations::I2SRandReplace, tokens_mutations,
         StdMOptMutator, StdScheduledMutator, Tokens,
@@ -214,13 +214,18 @@ fn fuzz(
     let file_null = File::open("/dev/null")?;
 
     // 'While the monitor are state, they are usually used in the broker - which is likely never restarted
-    let monitor = SimpleMonitor::new(|s| {
+    /*#[cfg(not(feature = "tui"))]
+    let mon = SimpleMonitor::new(|s| {
         #[cfg(unix)]
         writeln!(&mut stdout_cpy, "{s}").unwrap();
         #[cfg(windows)]
         println!("{s}");
         writeln!(log.borrow_mut(), "{:?} {s}", current_time()).unwrap();
     });
+    #[cfg(feature = "tui")]*/
+    let ui = TuiUI::with_version(String::from("Baby Fuzzer"), String::from("0.0.1"), false);
+    //#[cfg(feature = "tui")]
+    let monitor = TuiMonitor::new(ui);
 
     // We need a shared map to store our state before a crash.
     // This way, we are able to continue fuzzing afterwards.
@@ -284,7 +289,7 @@ fn fuzz(
         .unwrap()
     });
 
-    println!("Let's fuzz :)");
+    //println!("Let's fuzz :)");
 
     // The actual target run starts here.
     // Call LLVMFUzzerInitialize() if present.
