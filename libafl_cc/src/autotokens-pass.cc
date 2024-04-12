@@ -38,7 +38,6 @@
 #include "llvm/IR/IRBuilder.h"
 
 #include "common-llvm.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/DebugInfo.h"
