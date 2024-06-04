@@ -48,7 +48,7 @@ use crate::{
         EventProcessor, EventRestarter, HasCustomBufHandlers, HasEventManagerId, ProgressReporter,
     },
     executors::{Executor, HasObservers},
-    fuzzer::{EvaluatorObservers, ExecutionProcessor},
+    fuzzer::{Evaluator, EvaluatorObservers, ExecutionProcessor},
     inputs::{Input, InputConverter, UsesInput},
     monitors::Monitor,
     observers::ObserversTuple,
@@ -357,6 +357,8 @@ where
 {
     /// The LLMP client for inter process communication
     llmp: LlmpClient<SP>,
+    /// always_interesting
+    pub always_interesting: bool,
     /// The custom buf handler
     custom_buf_handlers: Vec<Box<CustomBufHandlerFn<S>>>,
     #[cfg(feature = "llmp_compression")]
@@ -447,6 +449,7 @@ where
     pub fn new(llmp: LlmpClient<SP>, configuration: EventConfig) -> Result<Self, Error> {
         Ok(Self {
             llmp,
+            always_interesting: false,
             #[cfg(feature = "llmp_compression")]
             compressor: GzipCompressor::new(COMPRESS_THRESHOLD),
             configuration,
@@ -475,6 +478,7 @@ where
     ) -> Result<Self, Error> {
         Ok(Self {
             llmp: LlmpClient::create_attach_to_tcp(shmem_provider, port)?,
+            always_interesting: false,
             #[cfg(feature = "llmp_compression")]
             compressor: GzipCompressor::new(COMPRESS_THRESHOLD),
             configuration,
@@ -501,6 +505,7 @@ where
     ) -> Result<Self, Error> {
         Ok(Self {
             llmp: LlmpClient::on_existing_from_env(shmem_provider, env_name)?,
+            always_interesting: false,
             #[cfg(feature = "llmp_compression")]
             compressor: GzipCompressor::new(COMPRESS_THRESHOLD),
             configuration,
@@ -530,6 +535,7 @@ where
     ) -> Result<Self, Error> {
         Ok(Self {
             llmp: LlmpClient::existing_client_from_description(shmem_provider, description)?,
+            always_interesting: false,
             #[cfg(feature = "llmp_compression")]
             compressor: GzipCompressor::new(COMPRESS_THRESHOLD),
             configuration,
@@ -572,7 +578,9 @@ where
     where
         E: Executor<Self, Z> + HasObservers<State = S>,
         for<'a> E::Observers: Deserialize<'a>,
-        Z: ExecutionProcessor<E::Observers, State = S> + EvaluatorObservers<E::Observers>,
+        Z: ExecutionProcessor<E::Observers, State = S>
+            + EvaluatorObservers<E::Observers>
+            + Evaluator<E, Self>,
     {
         match event {
             Event::NewTestcase {
@@ -587,33 +595,39 @@ where
             } => {
                 log::info!("Received new Testcase from {client_id:?} ({client_config:?}, forward {forward_id:?})");
 
-                let res = if client_config.match_with(&self.configuration)
-                    && observers_buf.is_some()
-                {
-                    #[cfg(feature = "adaptive_serialization")]
-                    let start = current_time();
-                    let observers: E::Observers =
-                        postcard::from_bytes(observers_buf.as_ref().unwrap())?;
-                    #[cfg(feature = "adaptive_serialization")]
-                    {
-                        self.deserialization_time = current_time() - start;
-                    }
-                    #[cfg(feature = "scalability_introspection")]
-                    {
-                        state.scalability_monitor_mut().testcase_with_observers += 1;
-                    }
-                    fuzzer.process_execution(state, self, input, &observers, &exit_kind, false)?
-                } else {
-                    #[cfg(feature = "scalability_introspection")]
-                    {
-                        state.scalability_monitor_mut().testcase_without_observers += 1;
-                    }
-                    fuzzer.evaluate_input_with_observers::<E, Self>(
-                        state, executor, self, input, false,
-                    )?
-                };
-                if let Some(item) = res.1 {
+                if self.always_interesting {
+                    let item = fuzzer.add_input(state, executor, self, input)?;
                     log::info!("Added received Testcase as item #{item}");
+                } else {
+                    let res = if client_config.match_with(&self.configuration)
+                        && observers_buf.is_some()
+                    {
+                        #[cfg(feature = "adaptive_serialization")]
+                        let start = current_time();
+                        let observers: E::Observers =
+                            postcard::from_bytes(observers_buf.as_ref().unwrap())?;
+                        #[cfg(feature = "adaptive_serialization")]
+                        {
+                            self.deserialization_time = current_time() - start;
+                        }
+                        #[cfg(feature = "scalability_introspection")]
+                        {
+                            state.scalability_monitor_mut().testcase_with_observers += 1;
+                        }
+                        fuzzer
+                            .process_execution(state, self, input, &observers, &exit_kind, false)?
+                    } else {
+                        #[cfg(feature = "scalability_introspection")]
+                        {
+                            state.scalability_monitor_mut().testcase_without_observers += 1;
+                        }
+                        fuzzer.evaluate_input_with_observers::<E, Self>(
+                            state, executor, self, input, false,
+                        )?
+                    };
+                    if let Some(item) = res.1 {
+                        log::info!("Added received Testcase as item #{item}");
+                    }
                 }
                 Ok(())
             }
@@ -763,7 +777,9 @@ where
     SP: ShMemProvider,
     E: HasObservers<State = S> + Executor<Self, Z>,
     for<'a> E::Observers: Deserialize<'a>,
-    Z: EvaluatorObservers<E::Observers, State = S> + ExecutionProcessor<E::Observers, State = S>,
+    Z: EvaluatorObservers<E::Observers, State = S>
+        + ExecutionProcessor<E::Observers, State = S>
+        + Evaluator<E, Self>,
 {
     fn process(
         &mut self,
@@ -808,7 +824,9 @@ where
     for<'a> E::Observers: Deserialize<'a>,
     S: State + HasExecutions + HasMetadata + HasLastReportTime,
     SP: ShMemProvider,
-    Z: EvaluatorObservers<E::Observers, State = S> + ExecutionProcessor<E::Observers, State = S>,
+    Z: EvaluatorObservers<E::Observers, State = S>
+        + ExecutionProcessor<E::Observers, State = S>
+        + Evaluator<E, Self>,
 {
 }
 
@@ -853,7 +871,7 @@ where
     //CE: CustomEvent<I>,
 {
     /// The embedded LLMP event manager
-    llmp_mgr: LlmpEventManager<S, SP>,
+    pub llmp_mgr: LlmpEventManager<S, SP>,
     /// The staterestorer to serialize the state for the next runner
     staterestorer: StateRestorer<SP>,
     /// Decide if the state restorer must save the serialized state
@@ -991,7 +1009,9 @@ where
     for<'a> E::Observers: Deserialize<'a>,
     S: State + HasExecutions + HasMetadata,
     SP: ShMemProvider + 'static,
-    Z: EvaluatorObservers<E::Observers, State = S> + ExecutionProcessor<E::Observers>, //CE: CustomEvent<I>,
+    Z: EvaluatorObservers<E::Observers, State = S>
+        + ExecutionProcessor<E::Observers>
+        + Evaluator<E, LlmpEventManager<S, SP>>, //CE: CustomEvent<I>,
 {
     fn process(&mut self, fuzzer: &mut Z, state: &mut S, executor: &mut E) -> Result<usize, Error> {
         self.llmp_mgr.process(fuzzer, state, executor)
@@ -1005,7 +1025,9 @@ where
     for<'a> E::Observers: Deserialize<'a>,
     S: State + HasExecutions + HasMetadata + HasLastReportTime,
     SP: ShMemProvider + 'static,
-    Z: EvaluatorObservers<E::Observers, State = S> + ExecutionProcessor<E::Observers>, //CE: CustomEvent<I>,
+    Z: EvaluatorObservers<E::Observers, State = S>
+        + ExecutionProcessor<E::Observers>
+        + Evaluator<E, LlmpEventManager<S, SP>>, //CE: CustomEvent<I>,
 {
 }
 

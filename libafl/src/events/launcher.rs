@@ -582,7 +582,7 @@ where
                         }
 
                         // Fuzzer client. keeps retrying the connection to broker till the broker starts
-                        let (state, mgr) = RestartingMgr::<MT, S, SP>::builder()
+                        let (state, mut mgr) = RestartingMgr::<MT, S, SP>::builder()
                             .shmem_provider(self.shmem_provider.clone())
                             .broker_port(self.broker_port)
                             .kind(ManagerKind::Client {
@@ -592,7 +592,7 @@ where
                             .serialize_state(self.serialize_state)
                             .build()
                             .launch()?;
-
+                        mgr.llmp_mgr.always_interesting = true;
                         let c_mgr = CentralizedEventManager::on_port(
                             mgr,
                             self.shmem_provider.clone(),

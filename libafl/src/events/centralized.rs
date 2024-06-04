@@ -279,7 +279,7 @@ where
         mut event: Event<<Self::State as UsesInput>::Input>,
     ) -> Result<(), Error> {
         if !self.is_main {
-	    let mut is_tc = false;
+            let mut is_tc = false;
             // secondary node
             let is_nt_or_heartbeat = match &mut event {
                 Event::NewTestcase {
@@ -293,7 +293,7 @@ where
                     forward_id,
                 } => {
                     *forward_id = Some(ClientId(self.inner.mgr_id().0 as u32));
-		    is_tc = true;
+                    is_tc = true;
                     true
                 }
                 Event::UpdateExecStats {
@@ -305,9 +305,9 @@ where
             };
             if is_nt_or_heartbeat {
                 self.forward_to_main(&event)?;
-		if is_tc {
-		    return Ok(());
-		}
+                if is_tc {
+                    return Ok(());
+                }
             }
         }
         self.inner.fire(state, event)
