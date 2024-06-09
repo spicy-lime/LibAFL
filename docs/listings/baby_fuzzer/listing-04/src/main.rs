@@ -2,6 +2,8 @@
 extern crate libafl;
 extern crate libafl_bolts;
 
+use std::path::PathBuf;
+
 use libafl::{
     corpus::{InMemoryCorpus, OnDiskCorpus},
     events::SimpleEventManager,
@@ -13,8 +15,7 @@ use libafl::{
     schedulers::QueueScheduler,
     state::StdState,
 };
-use libafl_bolts::{current_nanos, rands::StdRand, AsSlice};
-use std::path::PathBuf;
+use libafl_bolts::{rands::StdRand, tuples::tuple_list, AsSlice};
 /* ANCHOR_END: use */
 
 fn main() {
@@ -39,7 +40,7 @@ fn main() {
     // create a State from scratch
     let mut state = StdState::new(
         // RNG
-        StdRand::with_seed(current_nanos()),
+        StdRand::new(),
         // Corpus that will be evolved, we keep it in memory for performance
         InMemoryCorpus::new(),
         // Corpus in which we store solutions (crashes in this example),

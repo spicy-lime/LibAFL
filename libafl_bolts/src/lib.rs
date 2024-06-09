@@ -4,6 +4,7 @@
 #![doc = include_str!("../README.md")]
 /*! */
 #![cfg_attr(feature = "document-features", doc = document_features::document_features!())]
+#![forbid(unexpected_cfgs)]
 #![allow(incomplete_features)]
 #![no_std]
 // For `type_eq`
@@ -29,7 +30,8 @@
     clippy::missing_docs_in_private_items,
     clippy::module_name_repetitions,
     clippy::ptr_cast_constness,
-    clippy::negative_feature_names
+    clippy::negative_feature_names,
+    clippy::too_many_lines
 )]
 #![cfg_attr(not(test), warn(
     missing_debug_implementations,
@@ -120,7 +122,7 @@ pub mod fs;
 #[cfg(feature = "alloc")]
 pub mod llmp;
 pub mod math;
-#[cfg(all(feature = "std", unix))]
+#[cfg(feature = "std")]
 pub mod minibsod;
 pub mod os;
 #[cfg(feature = "alloc")]
@@ -163,11 +165,13 @@ pub mod bolts_prelude {
 #[cfg(all(unix, feature = "std"))]
 use alloc::boxed::Box;
 #[cfg(feature = "alloc")]
-use alloc::vec::Vec;
+use alloc::{borrow::Cow, vec::Vec};
 #[cfg(all(not(feature = "xxh3"), feature = "alloc"))]
 use core::hash::BuildHasher;
 #[cfg(any(feature = "xxh3", feature = "alloc"))]
 use core::hash::Hasher;
+#[cfg(all(unix, feature = "std"))]
+use core::ptr;
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(all(unix, feature = "std"))]
@@ -195,22 +199,11 @@ use xxhash_rust::xxh3::xxh3_64;
 )]
 pub struct ClientId(pub u32);
 
-#[cfg(feature = "std")]
-use log::{Metadata, Record};
-
-#[deprecated(
-    since = "0.11.0",
-    note = "The launcher module has moved out of `libafl_bolts` into `libafl::events::launcher`."
-)]
-/// Dummy module informing potential users that the launcher module has moved
-/// out of `libafl_bolts` into `libafl::events::launcher`.
-pub mod launcher {}
-
 use core::{
     array::TryFromSliceError,
     fmt::{self, Display},
-    iter::Iterator,
     num::{ParseIntError, TryFromIntError},
+    ops::{Deref, DerefMut},
     time,
 };
 #[cfg(feature = "std")]
@@ -218,6 +211,8 @@ use std::{env::VarError, io};
 
 #[cfg(feature = "libafl_derive")]
 pub use libafl_derive::SerdeAny;
+#[cfg(feature = "std")]
+use log::{Metadata, Record};
 #[cfg(feature = "alloc")]
 use {
     alloc::string::{FromUtf8Error, String},
@@ -225,10 +220,14 @@ use {
     core::str::Utf8Error,
 };
 
+/// Localhost addr, this is used, for example, for LLMP Client, which connects to this address
+pub const IP_LOCALHOST: &str = "127.0.0.1";
+
 /// We need fixed names for many parts of this lib.
+#[cfg(feature = "alloc")]
 pub trait Named {
     /// Provide the name of this element.
-    fn name(&self) -> &str;
+    fn name(&self) -> &Cow<'static, str>;
 }
 
 #[cfg(feature = "errors_backtrace")]
@@ -294,9 +293,6 @@ pub enum Error {
     /// Compression error
     #[cfg(feature = "gzip")]
     Compression(ErrorBacktrace),
-    /// File related error
-    #[cfg(feature = "std")]
-    File(io::Error, ErrorBacktrace),
     /// Optional val was supposed to be set, but isn't.
     EmptyOptional(String, ErrorBacktrace),
     /// Key not in Map
@@ -315,8 +311,13 @@ pub enum Error {
     Unsupported(String, ErrorBacktrace),
     /// Shutting down, not really an error.
     ShuttingDown,
+    /// OS error, wrapping a [`std::io::Error`]
+    #[cfg(feature = "std")]
+    OsError(io::Error, String, ErrorBacktrace),
     /// Something else happened
     Unknown(String, ErrorBacktrace),
+    /// Error with the corpora
+    InvalidCorpus(String, ErrorBacktrace),
 }
 
 impl Error {
@@ -333,12 +334,6 @@ impl Error {
     #[must_use]
     pub fn compression() -> Self {
         Error::Compression(ErrorBacktrace::new())
-    }
-    #[cfg(feature = "std")]
-    /// File related error
-    #[must_use]
-    pub fn file(arg: io::Error) -> Self {
-        Error::File(arg, ErrorBacktrace::new())
     }
     /// Optional val was supposed to be set, but isn't.
     #[must_use]
@@ -409,6 +404,28 @@ impl Error {
     {
         Error::Unsupported(arg.into(), ErrorBacktrace::new())
     }
+    /// OS error with additional message
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn os_error<S>(err: io::Error, msg: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Error::OsError(err, msg.into(), ErrorBacktrace::new())
+    }
+    /// OS error from [`std::io::Error::last_os_error`] with additional message
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn last_os_error<S>(msg: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Error::OsError(
+            io::Error::last_os_error(),
+            msg.into(),
+            ErrorBacktrace::new(),
+        )
+    }
     /// Something else happened
     #[must_use]
     pub fn unknown<S>(arg: S) -> Self
@@ -416,6 +433,14 @@ impl Error {
         S: Into<String>,
     {
         Error::Unknown(arg.into(), ErrorBacktrace::new())
+    }
+    /// Error with corpora
+    #[must_use]
+    pub fn invalid_corpus<S>(arg: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Error::InvalidCorpus(arg.into(), ErrorBacktrace::new())
     }
 }
 
@@ -431,17 +456,12 @@ impl Display for Error {
                 write!(f, "Error in decompression")?;
                 display_error_backtrace(f, b)
             }
-            #[cfg(feature = "std")]
-            Self::File(err, b) => {
-                write!(f, "File IO failed: {:?}", &err)?;
-                display_error_backtrace(f, b)
-            }
             Self::EmptyOptional(s, b) => {
                 write!(f, "Optional value `{0}` was not set", &s)?;
                 display_error_backtrace(f, b)
             }
             Self::KeyNotFound(s, b) => {
-                write!(f, "Key `{0}` not in Corpus", &s)?;
+                write!(f, "Key: `{0}` - not found", &s)?;
                 display_error_backtrace(f, b)
             }
             Self::Empty(s, b) => {
@@ -473,8 +493,17 @@ impl Display for Error {
                 display_error_backtrace(f, b)
             }
             Self::ShuttingDown => write!(f, "Shutting down!"),
+            #[cfg(feature = "std")]
+            Self::OsError(err, s, b) => {
+                write!(f, "OS error: {0}: {1}", &s, err)?;
+                display_error_backtrace(f, b)
+            }
             Self::Unknown(s, b) => {
                 write!(f, "Unknown error: {0}", &s)?;
+                display_error_backtrace(f, b)
+            }
+            Self::InvalidCorpus(s, b) => {
+                write!(f, "Invalid corpus: {0}", &s)?;
                 display_error_backtrace(f, b)
             }
         }
@@ -526,7 +555,7 @@ impl From<nix::Error> for Error {
 #[cfg(feature = "std")]
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
-        Self::file(err)
+        Self::os_error(err, "io::Error ocurred")
     }
 }
 
@@ -638,68 +667,47 @@ pub trait IntoOwned {
 }
 
 /// Can be converted to a slice
-pub trait AsSlice {
-    /// Type of the entries in this slice
-    type Entry;
+pub trait AsSlice<'a> {
+    /// Type of the entries of this slice
+    type Entry: 'a;
+    /// Type of the reference to this slice
+    type SliceRef: Deref<Target = [Self::Entry]>;
+
     /// Convert to a slice
-    fn as_slice(&self) -> &[Self::Entry];
+    fn as_slice(&'a self) -> Self::SliceRef;
+}
+
+impl<'a, T, R> AsSlice<'a> for R
+where
+    T: 'a,
+    R: Deref<Target = [T]>,
+{
+    type Entry = T;
+    type SliceRef = &'a [T];
+
+    fn as_slice(&'a self) -> Self::SliceRef {
+        &*self
+    }
 }
 
 /// Can be converted to a mutable slice
-pub trait AsMutSlice {
-    /// Type of the entries in this mut slice
-    type Entry;
+pub trait AsSliceMut<'a>: AsSlice<'a> {
+    /// Type of the mutable reference to this slice
+    type SliceRefMut: DerefMut<Target = [Self::Entry]>;
+
     /// Convert to a slice
-    fn as_mut_slice(&mut self) -> &mut [Self::Entry];
+    fn as_slice_mut(&'a mut self) -> Self::SliceRefMut;
 }
 
-#[cfg(feature = "alloc")]
-impl<T> AsSlice for Vec<T> {
-    type Entry = T;
+impl<'a, T, R> AsSliceMut<'a> for R
+where
+    T: 'a,
+    R: DerefMut<Target = [T]>,
+{
+    type SliceRefMut = &'a mut [T];
 
-    fn as_slice(&self) -> &[Self::Entry] {
-        self
-    }
-}
-
-#[cfg(feature = "alloc")]
-impl<T> AsMutSlice for Vec<T> {
-    type Entry = T;
-
-    fn as_mut_slice(&mut self) -> &mut [Self::Entry] {
-        self
-    }
-}
-
-impl<T> AsSlice for &[T] {
-    type Entry = T;
-
-    fn as_slice(&self) -> &[Self::Entry] {
-        self
-    }
-}
-
-impl<T> AsSlice for [T] {
-    type Entry = T;
-
-    fn as_slice(&self) -> &[Self::Entry] {
-        self
-    }
-}
-
-impl<T> AsMutSlice for &mut [T] {
-    type Entry = T;
-
-    fn as_mut_slice(&mut self) -> &mut [Self::Entry] {
-        self
-    }
-}
-
-impl<T> AsMutSlice for [T] {
-    type Entry = T;
-
-    fn as_mut_slice(&mut self) -> &mut [Self::Entry] {
-        self
+    fn as_slice_mut(&'a mut self) -> Self::SliceRefMut {
+        &mut *self
     }
 }
 
@@ -707,22 +715,51 @@ impl<T> AsMutSlice for [T] {
 pub trait AsIter<'it> {
     /// The item type
     type Item: 'it;
+    /// The ref type
+    type Ref: Deref<Target = Self::Item>;
     /// The iterator type
-    type IntoIter: Iterator<Item = &'it Self::Item>;
+    type IntoIter: Iterator<Item = Self::Ref>;
 
     /// Create an iterator from &self
     fn as_iter(&'it self) -> Self::IntoIter;
 }
 
+impl<'it, S, T> AsIter<'it> for S
+where
+    S: AsSlice<'it, Entry = T, SliceRef = &'it [T]>,
+    T: 'it,
+{
+    type Item = S::Entry;
+    type Ref = &'it Self::Item;
+    type IntoIter = core::slice::Iter<'it, Self::Item>;
+
+    fn as_iter(&'it self) -> Self::IntoIter {
+        self.as_slice().iter()
+    }
+}
+
 /// Create an `Iterator` from a mutable reference
-pub trait AsIterMut<'it> {
-    /// The item type
-    type Item: 'it;
+pub trait AsIterMut<'it>: AsIter<'it> {
+    /// The ref type
+    type RefMut: DerefMut<Target = Self::Item>;
     /// The iterator type
-    type IntoIter: Iterator<Item = &'it mut Self::Item>;
+    type IntoIterMut: Iterator<Item = Self::RefMut>;
 
     /// Create an iterator from &mut self
-    fn as_iter_mut(&'it mut self) -> Self::IntoIter;
+    fn as_iter_mut(&'it mut self) -> Self::IntoIterMut;
+}
+
+impl<'it, S, T> AsIterMut<'it> for S
+where
+    S: AsSliceMut<'it, Entry = T, SliceRef = &'it [T], SliceRefMut = &'it mut [T]>,
+    T: 'it,
+{
+    type RefMut = &'it mut Self::Item;
+    type IntoIterMut = core::slice::IterMut<'it, Self::Item>;
+
+    fn as_iter_mut(&'it mut self) -> Self::IntoIterMut {
+        self.as_slice_mut().iter_mut()
+    }
 }
 
 /// Has a length field
@@ -733,6 +770,14 @@ pub trait HasLen {
     /// Returns `true` if it has no elements.
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<T> HasLen for Vec<T> {
+    #[inline]
+    fn len(&self) -> usize {
+        Vec::<T>::len(self)
     }
 }
 
@@ -847,8 +892,9 @@ impl log::Log for SimpleStdoutLogger {
 
     fn log(&self, record: &Record) {
         println!(
-            "[{:?}] {}: {}",
+            "[{:?}, {:?}] {}: {}",
             current_time(),
+            std::process::id(),
             record.level(),
             record.args()
         );
@@ -893,8 +939,9 @@ impl log::Log for SimpleStderrLogger {
 
     fn log(&self, record: &Record) {
         eprintln!(
-            "[{:?}] {}: {}",
+            "[{:?}, {:?}] {}: {}",
             current_time(),
+            std::process::id(),
             record.level(),
             record.args()
         );
@@ -940,7 +987,7 @@ impl SimpleFdLogger {
         // We also access a shared variable here.
         unsafe {
             LIBAFL_RAWFD_LOGGER.set_fd(log_fd);
-            log::set_logger(&LIBAFL_RAWFD_LOGGER)?;
+            log::set_logger(&*ptr::addr_of!(LIBAFL_RAWFD_LOGGER))?;
         }
         Ok(())
     }
@@ -957,8 +1004,9 @@ impl log::Log for SimpleFdLogger {
         let mut f = unsafe { File::from_raw_fd(self.fd) };
         writeln!(
             f,
-            "[{:?}] {}: {}",
+            "[{:?}, {:#?}] {}: {}",
             current_time(),
+            std::process::id(),
             record.level(),
             record.args()
         )
@@ -975,6 +1023,7 @@ impl log::Log for SimpleFdLogger {
 /// # Safety
 /// The function is arguably safe, but it might have undesirable side effects since it closes `stdout` and `stderr`.
 #[cfg(all(unix, feature = "std"))]
+#[allow(unused_qualifications)]
 pub unsafe fn dup_and_mute_outputs() -> Result<(RawFd, RawFd), Error> {
     let old_stdout = stdout().as_raw_fd();
     let old_stderr = stderr().as_raw_fd();
@@ -1001,7 +1050,7 @@ pub unsafe fn set_error_print_panic_hook(new_stderr: RawFd) {
         let mut f = unsafe { File::from_raw_fd(new_stderr) };
         writeln!(f, "{panic_info}",)
             .unwrap_or_else(|err| println!("Failed to log to fd {new_stderr}: {err}"));
-        std::mem::forget(f);
+        mem::forget(f);
     }));
 }
 
@@ -1151,6 +1200,9 @@ pub mod pybind {
 mod tests {
 
     #[cfg(all(feature = "std", unix))]
+    use core::ptr;
+
+    #[cfg(all(feature = "std", unix))]
     use crate::LIBAFL_RAWFD_LOGGER;
 
     #[test]
@@ -1160,7 +1212,7 @@ mod tests {
 
         unsafe { LIBAFL_RAWFD_LOGGER.fd = stdout().as_raw_fd() };
         unsafe {
-            log::set_logger(&LIBAFL_RAWFD_LOGGER).unwrap();
+            log::set_logger(&*ptr::addr_of!(LIBAFL_RAWFD_LOGGER)).unwrap();
         }
         log::set_max_level(log::LevelFilter::Debug);
         log::info!("Test");

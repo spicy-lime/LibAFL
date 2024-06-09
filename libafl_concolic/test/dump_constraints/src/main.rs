@@ -1,6 +1,7 @@
 //! This is a straight-forward command line utility that can dump constraints written by a tracing runtime.
 //! It achieves this by running an instrumented target program with the necessary environment variables set.
 //! When the program has finished executing, it dumps the traced constraints to a file.
+#![forbid(unexpected_cfgs)]
 
 use std::{
     ffi::OsString,
@@ -8,10 +9,9 @@ use std::{
     io::{BufWriter, Write},
     path::PathBuf,
     process::{exit, Command},
-    string::ToString,
 };
 
-use clap::{self, Parser};
+use clap::Parser;
 use libafl::observers::concolic::{
     serialization_format::{MessageFileReader, MessageFileWriter, DEFAULT_ENV_NAME},
     EXPRESSION_PRUNING, HITMAP_ENV_NAME, NO_FLOAT_ENV_NAME, SELECTIVE_SYMBOLICATION_ENV_NAME,

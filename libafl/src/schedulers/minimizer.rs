@@ -5,21 +5,22 @@ use alloc::vec::Vec;
 use core::{any::type_name, cmp::Ordering, marker::PhantomData};
 
 use hashbrown::{HashMap, HashSet};
-use libafl_bolts::{rands::Rand, serdeany::SerdeAny, AsSlice, HasRefCnt};
+use libafl_bolts::{rands::Rand, serdeany::SerdeAny, AsIter, HasRefCnt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     corpus::{Corpus, CorpusId, Testcase},
     feedbacks::MapIndexesMetadata,
     inputs::UsesInput,
-    observers::ObserversTuple,
+    observers::{CanTrack, ObserversTuple},
+    require_index_tracking,
     schedulers::{LenTimeMulTestcaseScore, RemovableScheduler, Scheduler, TestcaseScore},
-    state::{HasCorpus, HasMetadata, HasRand, UsesState},
-    Error,
+    state::{HasCorpus, HasRand, UsesState},
+    Error, HasMetadata,
 };
 
 /// Default probability to skip the non-favored values
-pub const DEFAULT_SKIP_NON_FAVORED_PROB: u64 = 95;
+pub const DEFAULT_SKIP_NON_FAVORED_PROB: f64 = 0.95;
 
 /// A testcase metadata saying if a testcase is favored
 #[derive(Debug, Serialize, Deserialize)]
@@ -70,33 +71,34 @@ impl Default for TopRatedsMetadata {
 /// corpus that exercise all the requested features (e.g. all the coverage seen so far)
 /// prioritizing [`Testcase`]`s` using [`TestcaseScore`]
 #[derive(Debug, Clone)]
-pub struct MinimizerScheduler<CS, F, M> {
+pub struct MinimizerScheduler<CS, F, M, O> {
     base: CS,
-    skip_non_favored_prob: u64,
+    skip_non_favored_prob: f64,
     remove_metadata: bool,
-    phantom: PhantomData<(F, M)>,
+    phantom: PhantomData<(F, M, O)>,
 }
 
-impl<CS, F, M> UsesState for MinimizerScheduler<CS, F, M>
+impl<CS, F, M, O> UsesState for MinimizerScheduler<CS, F, M, O>
 where
     CS: UsesState,
 {
     type State = CS::State;
 }
 
-impl<CS, F, M> RemovableScheduler for MinimizerScheduler<CS, F, M>
+impl<CS, F, M, O> RemovableScheduler for MinimizerScheduler<CS, F, M, O>
 where
     CS: RemovableScheduler,
-    F: TestcaseScore<CS::State>,
-    M: AsSlice<Entry = usize> + SerdeAny + HasRefCnt,
-    CS::State: HasCorpus + HasMetadata + HasRand,
+    F: TestcaseScore<<Self as UsesState>::State>,
+    M: for<'a> AsIter<'a, Item = usize> + SerdeAny + HasRefCnt,
+    <Self as UsesState>::State: HasCorpus + HasMetadata + HasRand,
+    O: CanTrack,
 {
     /// Replaces the testcase at the given idx
     fn on_replace(
         &mut self,
-        state: &mut CS::State,
+        state: &mut <Self as UsesState>::State,
         idx: CorpusId,
-        testcase: &Testcase<<CS::State as UsesInput>::Input>,
+        testcase: &Testcase<<<Self as UsesState>::State as UsesInput>::Input>,
     ) -> Result<(), Error> {
         self.base.on_replace(state, idx, testcase)?;
         self.update_score(state, idx)
@@ -105,9 +107,9 @@ where
     /// Removes an entry from the corpus
     fn on_remove(
         &mut self,
-        state: &mut CS::State,
+        state: &mut <Self as UsesState>::State,
         idx: CorpusId,
-        testcase: &Option<Testcase<<CS::State as UsesInput>::Input>>,
+        testcase: &Option<Testcase<<<Self as UsesState>::State as UsesInput>::Input>>,
     ) -> Result<(), Error> {
         self.base.on_remove(state, idx, testcase)?;
         let mut entries =
@@ -128,13 +130,13 @@ where
             let factor = F::compute(state, &mut *old)?;
             if let Some(old_map) = old.metadata_map_mut().get_mut::<M>() {
                 let mut e_iter = entries.iter();
-                let mut map_iter = old_map.as_slice().iter(); // ASSERTION: guaranteed to be in order?
+                let mut map_iter = old_map.as_iter(); // ASSERTION: guaranteed to be in order?
 
                 // manual set intersection
                 let mut entry = e_iter.next();
                 let mut map_entry = map_iter.next();
                 while let Some(e) = entry {
-                    if let Some(me) = map_entry {
+                    if let Some(ref me) = map_entry {
                         match e.cmp(me) {
                             Ordering::Less => {
                                 entry = e_iter.next();
@@ -191,15 +193,16 @@ where
     }
 }
 
-impl<CS, F, M> Scheduler for MinimizerScheduler<CS, F, M>
+impl<CS, F, M, O> Scheduler for MinimizerScheduler<CS, F, M, O>
 where
     CS: Scheduler,
-    F: TestcaseScore<CS::State>,
-    M: AsSlice<Entry = usize> + SerdeAny + HasRefCnt,
-    CS::State: HasCorpus + HasMetadata + HasRand,
+    F: TestcaseScore<Self::State>,
+    M: for<'a> AsIter<'a, Item = usize> + SerdeAny + HasRefCnt,
+    Self::State: HasCorpus + HasMetadata + HasRand,
+    O: CanTrack,
 {
     /// Called when a [`Testcase`] is added to the corpus
-    fn on_add(&mut self, state: &mut CS::State, idx: CorpusId) -> Result<(), Error> {
+    fn on_add(&mut self, state: &mut Self::State, idx: CorpusId) -> Result<(), Error> {
         self.base.on_add(state, idx)?;
         self.update_score(state, idx)
     }
@@ -218,7 +221,7 @@ where
     }
 
     /// Gets the next entry
-    fn next(&mut self, state: &mut CS::State) -> Result<CorpusId, Error> {
+    fn next(&mut self, state: &mut Self::State) -> Result<CorpusId, Error> {
         self.cull(state)?;
         let mut idx = self.base.next(state)?;
         while {
@@ -228,7 +231,7 @@ where
                 .borrow()
                 .has_metadata::<IsFavoredMetadata>();
             has
-        } && state.rand_mut().below(100) < self.skip_non_favored_prob
+        } && state.rand_mut().coinflip(self.skip_non_favored_prob)
         {
             idx = self.base.next(state)?;
         }
@@ -246,17 +249,22 @@ where
     }
 }
 
-impl<CS, F, M> MinimizerScheduler<CS, F, M>
+impl<CS, F, M, O> MinimizerScheduler<CS, F, M, O>
 where
     CS: Scheduler,
-    F: TestcaseScore<CS::State>,
-    M: AsSlice<Entry = usize> + SerdeAny + HasRefCnt,
-    CS::State: HasCorpus + HasMetadata + HasRand,
+    F: TestcaseScore<<Self as UsesState>::State>,
+    M: for<'a> AsIter<'a, Item = usize> + SerdeAny + HasRefCnt,
+    <Self as UsesState>::State: HasCorpus + HasMetadata + HasRand,
+    O: CanTrack,
 {
     /// Update the [`Corpus`] score using the [`MinimizerScheduler`]
     #[allow(clippy::unused_self)]
     #[allow(clippy::cast_possible_wrap)]
-    pub fn update_score(&self, state: &mut CS::State, idx: CorpusId) -> Result<(), Error> {
+    pub fn update_score(
+        &self,
+        state: &mut <Self as UsesState>::State,
+        idx: CorpusId,
+    ) -> Result<(), Error> {
         // Create a new top rated meta if not existing
         if state.metadata_map().get::<TopRatedsMetadata>().is_none() {
             state.add_metadata(TopRatedsMetadata::new());
@@ -272,8 +280,8 @@ where
                 ))
             })?;
             let top_rateds = state.metadata_map().get::<TopRatedsMetadata>().unwrap();
-            for elem in meta.as_slice() {
-                if let Some(old_idx) = top_rateds.map.get(elem) {
+            for elem in meta.as_iter() {
+                if let Some(old_idx) = top_rateds.map.get(&*elem) {
                     if *old_idx == idx {
                         new_favoreds.push(*elem); // always retain current; we'll drop it later otherwise
                         continue;
@@ -330,7 +338,7 @@ where
 
     /// Cull the [`Corpus`] using the [`MinimizerScheduler`]
     #[allow(clippy::unused_self)]
-    pub fn cull(&self, state: &CS::State) -> Result<(), Error> {
+    pub fn cull(&self, state: &<Self as UsesState>::State) -> Result<(), Error> {
         let Some(top_rated) = state.metadata_map().get::<TopRatedsMetadata>() else {
             return Ok(());
         };
@@ -346,7 +354,7 @@ where
                         type_name::<M>()
                     ))
                 })?;
-                for elem in meta.as_slice() {
+                for elem in meta.as_iter() {
                     acc.insert(*elem);
                 }
 
@@ -371,7 +379,10 @@ where
     /// and has a default probability to skip non-faved [`Testcase`]s of [`DEFAULT_SKIP_NON_FAVORED_PROB`].
     /// This will remove the metadata `M` when it is no longer needed, after consumption. This might
     /// for example be a `MapIndexesMetadata`.
-    pub fn new(base: CS) -> Self {
+    ///
+    /// When calling, pass the edges observer which will provided the indexes to minimize over.
+    pub fn new(_observer: &O, base: CS) -> Self {
+        require_index_tracking!("MinimizerScheduler", O);
         Self {
             base,
             skip_non_favored_prob: DEFAULT_SKIP_NON_FAVORED_PROB,
@@ -383,7 +394,10 @@ where
     /// Creates a new [`MinimizerScheduler`] that wraps a `base` [`Scheduler`]
     /// and has a default probability to skip non-faved [`Testcase`]s of [`DEFAULT_SKIP_NON_FAVORED_PROB`].
     /// This method will prevent the metadata `M` from being removed at the end of scoring.
-    pub fn non_metadata_removing(base: CS) -> Self {
+    ///
+    /// When calling, pass the edges observer which will provided the indexes to minimize over.
+    pub fn non_metadata_removing(_observer: &O, base: CS) -> Self {
+        require_index_tracking!("MinimizerScheduler", O);
         Self {
             base,
             skip_non_favored_prob: DEFAULT_SKIP_NON_FAVORED_PROB,
@@ -394,7 +408,10 @@ where
 
     /// Creates a new [`MinimizerScheduler`] that wraps a `base` [`Scheduler`]
     /// and has a non-default probability to skip non-faved [`Testcase`]s using (`skip_non_favored_prob`).
-    pub fn with_skip_prob(base: CS, skip_non_favored_prob: u64) -> Self {
+    ///
+    /// When calling, pass the edges observer which will provided the indexes to minimize over.
+    pub fn with_skip_prob(_observer: &O, base: CS, skip_non_favored_prob: f64) -> Self {
+        require_index_tracking!("MinimizerScheduler", O);
         Self {
             base,
             skip_non_favored_prob,
@@ -405,10 +422,14 @@ where
 }
 
 /// A [`MinimizerScheduler`] with [`LenTimeMulTestcaseScore`] to prioritize quick and small [`Testcase`]`s`.
-pub type LenTimeMinimizerScheduler<CS, M> =
-    MinimizerScheduler<CS, LenTimeMulTestcaseScore<<CS as UsesState>::State>, M>;
+pub type LenTimeMinimizerScheduler<CS, M, O> =
+    MinimizerScheduler<CS, LenTimeMulTestcaseScore<<CS as UsesState>::State>, M, O>;
 
 /// A [`MinimizerScheduler`] with [`LenTimeMulTestcaseScore`] to prioritize quick and small [`Testcase`]`s`
 /// that exercise all the entries registered in the [`MapIndexesMetadata`].
-pub type IndexesLenTimeMinimizerScheduler<CS> =
-    MinimizerScheduler<CS, LenTimeMulTestcaseScore<<CS as UsesState>::State>, MapIndexesMetadata>;
+pub type IndexesLenTimeMinimizerScheduler<CS, O> = MinimizerScheduler<
+    CS,
+    LenTimeMulTestcaseScore<<CS as UsesState>::State>,
+    MapIndexesMetadata,
+    O,
+>;

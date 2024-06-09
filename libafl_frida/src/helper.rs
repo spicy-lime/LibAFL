@@ -6,9 +6,8 @@ use std::{
     rc::Rc,
 };
 
-#[cfg(unix)]
-use frida_gum::instruction_writer::InstructionWriter;
 use frida_gum::{
+    instruction_writer::InstructionWriter,
     stalker::{StalkerIterator, StalkerOutput, Transformer},
     Gum, Module, ModuleDetails, ModuleMap, PageProtection,
 };
@@ -19,7 +18,7 @@ use libafl::{
 use libafl_bolts::{cli::FuzzerOptions, tuples::MatchFirstType};
 use libafl_targets::drcov::DrCovBasicBlock;
 #[cfg(unix)]
-use nix::sys::mman::{mmap, MapFlags, ProtFlags};
+use nix::sys::mman::{mmap_anonymous, MapFlags, ProtFlags};
 use rangemap::RangeMap;
 #[cfg(target_arch = "aarch64")]
 use yaxpeax_arch::Arch;
@@ -28,16 +27,9 @@ use yaxpeax_arm::armv8::a64::{ARMv8, InstDecoder};
 #[cfg(target_arch = "x86_64")]
 use yaxpeax_x86::amd64::InstDecoder;
 
-#[cfg(unix)]
-use crate::asan::asan_rt::AsanRuntime;
-#[cfg(all(feature = "cmplog", target_arch = "aarch64"))]
+#[cfg(feature = "cmplog")]
 use crate::cmplog_rt::CmpLogRuntime;
-use crate::{coverage_rt::CoverageRuntime, drcov_rt::DrCovRuntime};
-
-#[cfg(target_vendor = "apple")]
-const ANONYMOUS_FLAG: MapFlags = MapFlags::MAP_ANON;
-#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
-const ANONYMOUS_FLAG: MapFlags = MapFlags::MAP_ANONYMOUS;
+use crate::{asan::asan_rt::AsanRuntime, coverage_rt::CoverageRuntime, drcov_rt::DrCovRuntime};
 
 /// The Runtime trait
 pub trait FridaRuntime: 'static + Debug {
@@ -48,6 +40,8 @@ pub trait FridaRuntime: 'static + Debug {
         ranges: &RangeMap<usize, (u16, String)>,
         module_map: &Rc<ModuleMap>,
     );
+    /// Deinitialization
+    fn deinit(&mut self, gum: &Gum);
 
     /// Method called before execution
     fn pre_exec<I: Input + HasTargetBytes>(&mut self, input: &I) -> Result<(), Error>;
@@ -66,6 +60,9 @@ pub trait FridaRuntimeTuple: MatchFirstType + Debug {
         module_map: &Rc<ModuleMap>,
     );
 
+    /// Deinitialization
+    fn deinit_all(&mut self, gum: &Gum);
+
     /// Method called before execution
     fn pre_exec_all<I: Input + HasTargetBytes>(&mut self, input: &I) -> Result<(), Error>;
 
@@ -81,6 +78,8 @@ impl FridaRuntimeTuple for () {
         _module_map: &Rc<ModuleMap>,
     ) {
     }
+    fn deinit_all(&mut self, _gum: &Gum) {}
+
     fn pre_exec_all<I: Input + HasTargetBytes>(&mut self, _input: &I) -> Result<(), Error> {
         Ok(())
     }
@@ -102,6 +101,11 @@ where
     ) {
         self.0.init(gum, ranges, module_map);
         self.1.init_all(gum, ranges, module_map);
+    }
+
+    fn deinit_all(&mut self, gum: &Gum) {
+        self.0.deinit(gum);
+        self.1.deinit_all(gum);
     }
 
     fn pre_exec_all<I: Input + HasTargetBytes>(&mut self, input: &I) -> Result<(), Error> {
@@ -131,7 +135,7 @@ pub enum SkipRange {
     },
 }
 
-/// Builder for [`FridaInstrumentationHelper`](FridaInstrumentationHelper)
+/// Builder for [`FridaInstrumentationHelper`]
 pub struct FridaInstrumentationHelperBuilder {
     stalker_enabled: bool,
     disable_excludes: bool,
@@ -142,14 +146,14 @@ pub struct FridaInstrumentationHelperBuilder {
 }
 
 impl FridaInstrumentationHelperBuilder {
-    /// Create a new `FridaInstrumentationHelperBuilder`
+    /// Create a new [`FridaInstrumentationHelperBuilder`]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Enable or disable the Stalker
+    /// Enable or disable the [`Stalker`](https://frida.re/docs/stalker/)
     ///
-    /// Required for coverage collection, ASAN, and `CmpLog`.
+    /// Required for all instrumentation, such as coverage collection, `ASan`, and `CmpLog`.
     /// Enabled by default.
     #[must_use]
     pub fn enable_stalker(self, enabled: bool) -> Self {
@@ -180,7 +184,7 @@ impl FridaInstrumentationHelperBuilder {
     /// Instrument all modules in `/usr/lib` as well as `libfoo.so`:
     /// ```
     ///# use libafl_frida::helper::FridaInstrumentationHelperBuilder;
-    /// let builder = FridaInstrumentationHelperBuilder::new()
+    /// let builder = FridaInstrumentationHelper::builder()
     ///     .instrument_module_if(|module| module.name() == "libfoo.so")
     ///     .instrument_module_if(|module| module.path().starts_with("/usr/lib"));
     /// ```
@@ -209,7 +213,7 @@ impl FridaInstrumentationHelperBuilder {
     ///
     /// ```
     ///# use libafl_frida::helper::FridaInstrumentationHelperBuilder;
-    /// let builder = FridaInstrumentationHelperBuilder::new()
+    /// let builder = FridaInstrumentationHelper::builder()
     ///     .instrument_module_if(|module| module.path().starts_with("/usr/lib"))
     ///     .skip_module_if(|module| module.name() == "libfoo.so");
     /// ```
@@ -239,7 +243,7 @@ impl FridaInstrumentationHelperBuilder {
         self
     }
 
-    /// Build a `FridaInstrumentationHelper`
+    /// Build a [`FridaInstrumentationHelper`]
     pub fn build<RT: FridaRuntimeTuple>(
         self,
         gum: &Gum,
@@ -275,6 +279,11 @@ impl FridaInstrumentationHelperBuilder {
 
         if stalker_enabled {
             for (i, module) in module_map.values().iter().enumerate() {
+                log::trace!(
+                    "module: {:?} {:x}",
+                    module.name(),
+                    module.range().base_address().0 as usize
+                );
                 let range = module.range();
                 let start = range.base_address().0 as usize;
                 ranges
@@ -330,7 +339,7 @@ impl Default for FridaInstrumentationHelperBuilder {
     fn default() -> Self {
         Self {
             stalker_enabled: true,
-            disable_excludes: true,
+            disable_excludes: false,
             instrument_module_predicate: None,
             skip_module_predicate: Box::new(|module| {
                 // Skip the instrumentation module to avoid recursion.
@@ -396,9 +405,9 @@ where
 }
 
 impl<'a> FridaInstrumentationHelper<'a, ()> {
-    /// Create a builder to initialize a `FridaInstrumentationHelper`.
+    /// Create a builder to initialize a [`FridaInstrumentationHelper`].
     ///
-    /// See the documentation of [`FridaInstrumentationHelperBuilder`](FridaInstrumentationHelperBuilder)
+    /// See the documentation of [`FridaInstrumentationHelperBuilder`]
     /// for more details.
     pub fn builder() -> FridaInstrumentationHelperBuilder {
         FridaInstrumentationHelperBuilder::default()
@@ -445,7 +454,7 @@ where
         let runtimes = Rc::clone(runtimes);
 
         #[cfg(target_arch = "x86_64")]
-        let decoder = InstDecoder::minimal();
+        let decoder = InstDecoder::default();
 
         #[cfg(target_arch = "aarch64")]
         let decoder = <ARMv8 as Arch>::Decoder::default();
@@ -459,7 +468,7 @@ where
         basic_block: StalkerIterator,
         output: &StalkerOutput,
         ranges: &Rc<RefCell<RangeMap<usize, (u16, String)>>>,
-        runtimes: &Rc<RefCell<RT>>,
+        runtimes_unborrowed: &Rc<RefCell<RT>>,
         decoder: InstDecoder,
     ) {
         let mut first = true;
@@ -469,10 +478,10 @@ where
             let instr = instruction.instr();
             let instr_size = instr.bytes().len();
             let address = instr.address();
-            // log::trace!("block @ {:x} transformed to {:x}", address, output.writer().pc());
-
+            // log::trace!("x - block @ {:x} transformed to {:x}", address, output.writer().pc());
+            //the ASAN check needs to be done before the hook_rt check due to x86 insns such as call [mem]
             if ranges.borrow().contains_key(&(address as usize)) {
-                let mut runtimes = (*runtimes).borrow_mut();
+                let mut runtimes = (*runtimes_unborrowed).borrow_mut();
                 if first {
                     first = false;
                     // log::info!(
@@ -483,24 +492,29 @@ where
                     if let Some(rt) = runtimes.match_first_type_mut::<CoverageRuntime>() {
                         rt.emit_coverage_mapping(address, output);
                     }
-
                     if let Some(_rt) = runtimes.match_first_type_mut::<DrCovRuntime>() {
                         basic_block_start = address;
                     }
                 }
 
-                #[cfg(unix)]
                 let res = if let Some(_rt) = runtimes.match_first_type_mut::<AsanRuntime>() {
                     AsanRuntime::asan_is_interesting_instruction(decoder, address, instr)
                 } else {
                     None
                 };
 
-                #[cfg(all(target_arch = "x86_64", unix))]
+                #[cfg(target_arch = "x86_64")]
                 if let Some(details) = res {
                     if let Some(rt) = runtimes.match_first_type_mut::<AsanRuntime>() {
                         rt.emit_shadow_check(
-                            address, output, details.0, details.1, details.2, details.3, details.4,
+                            address,
+                            output,
+                            instr.bytes().len(),
+                            details.0,
+                            details.1,
+                            details.2,
+                            details.3,
+                            details.4,
                         );
                     }
                 }
@@ -510,7 +524,7 @@ where
                     if let Some(rt) = runtimes.match_first_type_mut::<AsanRuntime>() {
                         rt.emit_shadow_check(
                             address,
-                            &output,
+                            output,
                             basereg,
                             indexreg,
                             displacement,
@@ -520,7 +534,10 @@ where
                     }
                 }
 
-                #[cfg(all(feature = "cmplog", target_arch = "aarch64"))]
+                #[cfg(all(
+                    feature = "cmplog",
+                    any(target_arch = "aarch64", target_arch = "x86_64")
+                ))]
                 if let Some(rt) = runtimes.match_first_type_mut::<CmpLogRuntime>() {
                     if let Some((op1, op2, shift, special_case)) =
                         CmpLogRuntime::cmplog_is_interesting_instruction(decoder, address, instr)
@@ -529,16 +546,15 @@ where
                         //emit code that saves the relevant data in runtime(passes it to x0, x1)
                         rt.emit_comparison_handling(
                             address,
-                            &output,
+                            output,
                             &op1,
                             &op2,
-                            shift,
-                            special_case,
+                            &shift,
+                            &special_case,
                         );
                     }
                 }
 
-                #[cfg(unix)]
                 if let Some(rt) = runtimes.match_first_type_mut::<AsanRuntime>() {
                     rt.add_stalked_address(
                         output.writer().pc() as usize - instr_size,
@@ -553,7 +569,10 @@ where
             instruction.keep();
         }
         if basic_block_size != 0 {
-            if let Some(rt) = runtimes.borrow_mut().match_first_type_mut::<DrCovRuntime>() {
+            if let Some(rt) = runtimes_unborrowed
+                .borrow_mut()
+                .match_first_type_mut::<DrCovRuntime>()
+            {
                 log::trace!("{basic_block_start:#016X}:{basic_block_size:X}");
                 rt.drcov_basic_blocks.push(DrCovBasicBlock::new(
                     basic_block_start as usize,
@@ -561,6 +580,11 @@ where
                 ));
             }
         }
+    }
+
+    /// Clean up all runtimes
+    pub fn deinit(&mut self, gum: &Gum) {
+        (*self.runtimes).borrow_mut().deinit_all(gum);
     }
 
     /*
@@ -586,22 +610,18 @@ where
     fn workaround_gum_allocate_near() {
         unsafe {
             for _ in 0..512 {
-                mmap(
+                mmap_anonymous(
                     None,
                     std::num::NonZeroUsize::new_unchecked(128 * 1024),
                     ProtFlags::PROT_NONE,
-                    ANONYMOUS_FLAG | MapFlags::MAP_PRIVATE | MapFlags::MAP_NORESERVE,
-                    -1,
-                    0,
+                    MapFlags::MAP_PRIVATE | MapFlags::MAP_NORESERVE,
                 )
                 .expect("Failed to map dummy regions for frida workaround");
-                mmap(
+                mmap_anonymous(
                     None,
                     std::num::NonZeroUsize::new_unchecked(4 * 1024 * 1024),
                     ProtFlags::PROT_NONE,
-                    ANONYMOUS_FLAG | MapFlags::MAP_PRIVATE | MapFlags::MAP_NORESERVE,
-                    -1,
-                    0,
+                    MapFlags::MAP_PRIVATE | MapFlags::MAP_NORESERVE,
                 )
                 .expect("Failed to map dummy regions for frida workaround");
             }

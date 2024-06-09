@@ -7,16 +7,15 @@ use libafl_bolts::{current_time, impl_serdeany, rands::Rand};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    corpus::{Corpus, CorpusId, HasCurrentCorpusIdx},
     mark_feature_time,
     mutators::{MutationResult, Mutator},
     stages::{
         mutational::{MutatedTransform, MutatedTransformPost, DEFAULT_MUTATIONAL_MAX_ITERATIONS},
-        MutationalStage, Stage,
+        ExecutionCountRestartHelper, MutationalStage, Stage,
     },
     start_timer,
-    state::{HasCorpus, HasMetadata, HasNamedMetadata, HasRand, UsesState},
-    Error, Evaluator,
+    state::{HasCorpus, HasCurrentTestcase, HasExecutions, HasRand, UsesState},
+    Error, Evaluator, HasMetadata, HasNamedMetadata,
 };
 #[cfg(feature = "introspection")]
 use crate::{monitors::PerfFeature, state::HasClientPerfMonitor};
@@ -150,42 +149,39 @@ where
 /// A [`crate::stages::MutationalStage`] where the mutator iteration can be tuned at runtime
 #[derive(Clone, Debug)]
 pub struct TuneableMutationalStage<E, EM, I, M, Z> {
+    /// The mutator we use
     mutator: M,
+    /// The name of this stage
     name: String,
+    /// The progress helper we use to keep track of progress across restarts
+    restart_helper: ExecutionCountRestartHelper,
     phantom: PhantomData<(E, EM, I, Z)>,
 }
 
 impl<E, EM, I, M, Z> MutationalStage<E, EM, I, M, Z> for TuneableMutationalStage<E, EM, I, M, Z>
 where
-    E: UsesState<State = Z::State>,
-    EM: UsesState<State = Z::State>,
-    M: Mutator<I, Z::State>,
+    E: UsesState<State = Self::State>,
+    EM: UsesState<State = Self::State>,
+    M: Mutator<I, Self::State>,
     Z: Evaluator<E, EM>,
-    Z::State: HasCorpus + HasRand + HasNamedMetadata + HasMetadata,
-    I: MutatedTransform<Z::Input, Z::State> + Clone,
+    Self::State: HasCorpus + HasRand + HasNamedMetadata + HasMetadata + HasExecutions,
+    I: MutatedTransform<Z::Input, Self::State> + Clone,
 {
     /// Runs this (mutational) stage for the given `testcase`
     /// Exactly the same functionality as [`MutationalStage::perform_mutational`], but with added timeout support.
-    #[allow(clippy::cast_possible_wrap)] // more than i32 stages on 32 bit system - highly unlikely...
     fn perform_mutational(
         &mut self,
         fuzzer: &mut Z,
         executor: &mut E,
-        state: &mut Z::State,
+        state: &mut Self::State,
         manager: &mut EM,
     ) -> Result<(), Error> {
-        let Some(corpus_idx) = state.current_corpus_idx()? else {
-            return Err(Error::illegal_state(
-                "state is not currently processing a corpus index",
-            ));
-        };
-
         let fuzz_time = self.seed_fuzz_time(state)?;
         let iters = self.fixed_iters(state)?;
 
         start_timer!(state);
-        let mut testcase = state.corpus().get(corpus_idx)?.borrow_mut();
-        let Ok(input) = I::try_transform_from(&mut testcase, state, corpus_idx) else {
+        let mut testcase = state.current_testcase_mut()?;
+        let Ok(input) = I::try_transform_from(&mut testcase, state) else {
             return Ok(());
         };
         drop(testcase);
@@ -195,36 +191,38 @@ where
             (Some(fuzz_time), Some(iters)) => {
                 // perform n iterations or fuzz for provided time, whichever comes first
                 let start_time = current_time();
-                for i in 1..=iters {
+                for _ in 1..=iters {
                     if current_time() - start_time >= fuzz_time {
                         break;
                     }
 
-                    self.perform_mutation(fuzzer, executor, state, manager, &input, i)?;
+                    self.perform_mutation(fuzzer, executor, state, manager, &input)?;
                 }
             }
             (Some(fuzz_time), None) => {
                 // fuzz for provided time
                 let start_time = current_time();
-                for i in 1.. {
+                for _ in 1.. {
                     if current_time() - start_time >= fuzz_time {
                         break;
                     }
 
-                    self.perform_mutation(fuzzer, executor, state, manager, &input, i)?;
+                    self.perform_mutation(fuzzer, executor, state, manager, &input)?;
                 }
             }
             (None, Some(iters)) => {
                 // perform n iterations
-                for i in 1..=iters {
-                    self.perform_mutation(fuzzer, executor, state, manager, &input, i)?;
+                for _ in 1..=iters {
+                    self.perform_mutation(fuzzer, executor, state, manager, &input)?;
                 }
             }
             (None, None) => {
                 // fall back to random
-                let iters = self.iterations(state, corpus_idx)?;
-                for i in 1..=iters {
-                    self.perform_mutation(fuzzer, executor, state, manager, &input, i)?;
+                let iters = self
+                    .iterations(state)?
+                    .saturating_sub(self.execs_since_progress_start(state)? as usize);
+                for _ in 1..=iters {
+                    self.perform_mutation(fuzzer, executor, state, manager, &input)?;
                 }
             }
         }
@@ -244,45 +242,41 @@ where
     }
 
     /// Gets the number of iterations as a random number
-    #[allow(clippy::cast_possible_truncation)]
-    fn iterations(&self, state: &mut Z::State, _corpus_idx: CorpusId) -> Result<u64, Error> {
+    fn iterations(&self, state: &mut Self::State) -> Result<usize, Error> {
         Ok(
             // fall back to random
             1 + state.rand_mut().below(DEFAULT_MUTATIONAL_MAX_ITERATIONS),
         )
     }
+
+    fn execs_since_progress_start(&mut self, state: &mut Self::State) -> Result<u64, Error> {
+        self.restart_helper.execs_since_progress_start(state)
+    }
 }
 
 impl<E, EM, I, M, Z> UsesState for TuneableMutationalStage<E, EM, I, M, Z>
 where
-    E: UsesState<State = Z::State>,
-    EM: UsesState<State = Z::State>,
-    M: Mutator<I, Z::State>,
     Z: Evaluator<E, EM>,
-    Z::State: HasCorpus + HasRand,
-    I: MutatedTransform<Z::Input, Z::State> + Clone,
 {
     type State = Z::State;
 }
 
 impl<E, EM, I, M, Z> Stage<E, EM, Z> for TuneableMutationalStage<E, EM, I, M, Z>
 where
-    E: UsesState<State = Z::State>,
-    EM: UsesState<State = Z::State>,
-    M: Mutator<I, Z::State>,
+    E: UsesState<State = Self::State>,
+    EM: UsesState<State = Self::State>,
+    M: Mutator<I, Self::State>,
     Z: Evaluator<E, EM>,
-    Z::State: HasCorpus + HasRand + HasNamedMetadata + HasMetadata,
-    I: MutatedTransform<Z::Input, Z::State> + Clone,
+    Self::State: HasCorpus + HasRand + HasNamedMetadata + HasMetadata + HasExecutions,
+    I: MutatedTransform<Self::Input, Self::State> + Clone,
 {
-    type Progress = (); // TODO should this stage be resumed?
-
     #[inline]
     #[allow(clippy::let_and_return)]
     fn perform(
         &mut self,
         fuzzer: &mut Z,
         executor: &mut E,
-        state: &mut Z::State,
+        state: &mut Self::State,
         manager: &mut EM,
     ) -> Result<(), Error> {
         let ret = self.perform_mutational(fuzzer, executor, state, manager);
@@ -292,25 +286,34 @@ where
 
         ret
     }
+
+    fn restart_progress_should_run(&mut self, state: &mut Self::State) -> Result<bool, Error> {
+        self.restart_helper.restart_progress_should_run(state)
+    }
+
+    fn clear_restart_progress(&mut self, state: &mut Self::State) -> Result<(), Error> {
+        self.restart_helper.clear_restart_progress(state)
+    }
 }
 
 impl<E, EM, I, M, Z> TuneableMutationalStage<E, EM, I, M, Z>
 where
-    E: UsesState<State = Z::State>,
-    EM: UsesState<State = Z::State>,
-    M: Mutator<I, Z::State>,
+    E: UsesState<State = <Self as UsesState>::State>,
+    EM: UsesState<State = <Self as UsesState>::State>,
+    M: Mutator<I, <Self as UsesState>::State>,
     Z: Evaluator<E, EM>,
-    Z::State: HasCorpus + HasRand + HasNamedMetadata + HasMetadata,
-    I: MutatedTransform<Z::Input, Z::State> + Clone,
+    <Self as UsesState>::State:
+        HasCorpus + HasRand + HasNamedMetadata + HasMetadata + HasExecutions,
+    I: MutatedTransform<Z::Input, <Self as UsesState>::State> + Clone,
 {
     /// Creates a new default tuneable mutational stage
     #[must_use]
-    pub fn new(state: &mut Z::State, mutator: M) -> Self {
+    pub fn new(state: &mut <Self as UsesState>::State, mutator: M) -> Self {
         Self::transforming(state, mutator, STD_TUNEABLE_MUTATIONAL_STAGE_NAME)
     }
 
     /// Crates a new tuneable mutational stage with the given name
-    pub fn with_name(state: &mut Z::State, mutator: M, name: &str) -> Self {
+    pub fn with_name(state: &mut <Self as UsesState>::State, mutator: M, name: &str) -> Self {
         Self::transforming(state, mutator, name)
     }
 
@@ -323,7 +326,7 @@ where
     }
 
     /// Set the number of iterations to be used by the std [`TuneableMutationalStage`]
-    pub fn set_iters_std(state: &mut Z::State, iters: u64) -> Result<(), Error> {
+    pub fn set_iters_std(state: &mut <Self as UsesState>::State, iters: u64) -> Result<(), Error> {
         set_iters_by_name(state, iters, STD_TUNEABLE_MUTATIONAL_STAGE_NAME)
     }
 
@@ -344,7 +347,7 @@ where
     }
 
     /// Get the set iterations for the std [`TuneableMutationalStage`], if any
-    pub fn iters_std(state: &Z::State) -> Result<Option<u64>, Error> {
+    pub fn iters_std(state: &<Self as UsesState>::State) -> Result<Option<u64>, Error> {
         get_iters_by_name(state, STD_TUNEABLE_MUTATIONAL_STAGE_NAME)
     }
 
@@ -365,7 +368,10 @@ where
     }
 
     /// Set the time to mutate a single input in the std [`TuneableMutationalStage`]
-    pub fn set_seed_fuzz_time_std(state: &mut Z::State, fuzz_time: Duration) -> Result<(), Error> {
+    pub fn set_seed_fuzz_time_std(
+        state: &mut <Self as UsesState>::State,
+        fuzz_time: Duration,
+    ) -> Result<(), Error> {
         set_seed_fuzz_time_by_name(state, fuzz_time, STD_TUNEABLE_MUTATIONAL_STAGE_NAME)
     }
 
@@ -390,7 +396,10 @@ where
     }
 
     /// Set the time to mutate a single input for the std [`TuneableMutationalStage`]
-    pub fn seed_fuzz_time_std(&self, state: &Z::State) -> Result<Option<Duration>, Error> {
+    pub fn seed_fuzz_time_std(
+        &self,
+        state: &<Self as UsesState>::State,
+    ) -> Result<Option<Duration>, Error> {
         get_seed_fuzz_time_by_name(state, STD_TUNEABLE_MUTATIONAL_STAGE_NAME)
     }
 
@@ -415,7 +424,7 @@ where
     }
 
     /// Reset the std stage to a normal, randomized, stage
-    pub fn reset_std(state: &mut Z::State) -> Result<(), Error> {
+    pub fn reset_std(state: &mut <Self as UsesState>::State) -> Result<(), Error> {
         reset_by_name(state, STD_TUNEABLE_MUTATIONAL_STAGE_NAME)
     }
 
@@ -431,17 +440,14 @@ where
         &mut self,
         fuzzer: &mut Z,
         executor: &mut E,
-        state: &mut Z::State,
+        state: &mut <Self as UsesState>::State,
         manager: &mut EM,
         input: &I,
-        stage_idx: u64,
     ) -> Result<(), Error> {
         let mut input = input.clone();
 
         start_timer!(state);
-        let mutated = self
-            .mutator_mut()
-            .mutate(state, &mut input, stage_idx as i32)?;
+        let mutated = self.mutator_mut().mutate(state, &mut input)?;
         mark_feature_time!(state, PerfFeature::Mutate);
 
         if mutated == MutationResult::Skipped {
@@ -453,9 +459,8 @@ where
         let (_, corpus_idx) = fuzzer.evaluate_input(state, executor, manager, untransformed)?;
 
         start_timer!(state);
-        self.mutator_mut()
-            .post_exec(state, stage_idx as i32, corpus_idx)?;
-        post.post_exec(state, stage_idx as i32, corpus_idx)?;
+        self.mutator_mut().post_exec(state, corpus_idx)?;
+        post.post_exec(state, corpus_idx)?;
         mark_feature_time!(state, PerfFeature::MutatePostExec);
 
         Ok(())
@@ -464,21 +469,20 @@ where
 
 impl<E, EM, I, M, Z> TuneableMutationalStage<E, EM, I, M, Z>
 where
-    E: UsesState<State = Z::State>,
-    EM: UsesState<State = Z::State>,
+    E: UsesState<State = <Self as UsesState>::State>,
+    EM: UsesState<State = <Self as UsesState>::State>,
     M: Mutator<I, Z::State>,
     Z: Evaluator<E, EM>,
-    Z::State: HasCorpus + HasRand + HasNamedMetadata,
+    <Self as UsesState>::State: HasCorpus + HasRand + HasNamedMetadata,
 {
-    /// Creates a new tranforming mutational stage
+    /// Creates a new transforming mutational stage
     #[must_use]
-    pub fn transforming(state: &mut Z::State, mutator: M, name: &str) -> Self {
-        if !state.has_named_metadata::<TuneableMutationalStageMetadata>(name) {
-            state.add_named_metadata(TuneableMutationalStageMetadata::default(), name);
-        }
+    pub fn transforming(state: &mut <Self as UsesState>::State, mutator: M, name: &str) -> Self {
+        let _ = state.named_metadata_or_insert_with(name, TuneableMutationalStageMetadata::default);
         Self {
             mutator,
             name: name.to_string(),
+            restart_helper: ExecutionCountRestartHelper::default(),
             phantom: PhantomData,
         }
     }

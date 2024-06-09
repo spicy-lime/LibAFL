@@ -45,7 +45,10 @@ We highly recommend *not* to use e.g. your Linux distribition package as this is
 Rust directly, instructions can be found [here](https://www.rust-lang.org/tools/install).
 
 - LLVM tools  
-The LLVM tools (including clang, clang++) are needed (newer than LLVM 11.0.0 up to LLVM 17.0.0)
+The LLVM tools (including clang, clang++) are needed (newer than LLVM 15.0.0 up to LLVM 18.1.3)
+If you are using Debian/Ubuntu, again, we highly recommmend that you install the package from [here](https://apt.llvm.org/)
+
+(In `libafl_concolic`, we only support LLVM version newer than 18)
 
 - Cargo-make  
 We use cargo-make to build the fuzzers in `fuzzers/` directory. You can install it with
@@ -113,15 +116,7 @@ The best-tested fuzzer is [`./fuzzers/libfuzzer_libpng`](./fuzzers/libfuzzer_lib
 
 ## Contributing
 
-For bugs, feel free to open issues or contact us directly. Thank you for your support. <3
-
-Even though we will gladly assist you in finishing up your PR, try to
-- keep all the crates compiling with *stable* rust (hide the eventual non-stable code under [`cfg`s](https://github.com/AFLplusplus/LibAFL/blob/main/libafl/build.rs#L26))
-- run `cargo fmt` on your code before pushing
-- check the output of `cargo clippy --all` or `./clippy.sh`
-- run `cargo build --no-default-features` to check for `no_std` compatibility (and possibly add `#[cfg(feature = "std")]`) to hide parts of your code.
-
-Some of the parts in this list may be hard, don't be afraid to open a PR if you cannot fix them by yourself, so we can help.
+Please check out [CONTRIBUTING.md](CONTRIBUTING.md) for the contributing guideline.
 
 ## Cite
 
@@ -153,12 +148,4 @@ Licensed under either of <a href="LICENSE-APACHE">Apache License, Version
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in this crate by you, as defined in the Apache-2.0 license, shall
 be dual licensed as above, without any additional terms or conditions.
-</sub>
-
-<br>
-
-<sub>
-Dependencies under more restrictive licenses, such as GPL or AGPL, can be enabled
-using the respective feature in each crate when it is present, such as the
-'agpl' feature of the libafl crate.
 </sub>

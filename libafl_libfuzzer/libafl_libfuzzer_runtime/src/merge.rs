@@ -4,13 +4,14 @@ use std::{
     fs::{rename, File},
     io::Write,
     os::fd::{AsRawFd, FromRawFd},
+    ptr::addr_of_mut,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use libafl::{
     corpus::Corpus,
     events::{EventRestarter, SimpleRestartingEventManager},
-    executors::{ExitKind, InProcessExecutor, TimeoutExecutor},
+    executors::{ExitKind, InProcessExecutor},
     feedback_and_fast, feedback_or_fast,
     feedbacks::{CrashFeedback, MinMapFeedback, TimeoutFeedback},
     inputs::{BytesInput, HasTargetBytes},
@@ -21,7 +22,7 @@ use libafl::{
     Error, HasScheduler, StdFuzzer,
 };
 use libafl_bolts::{
-    rands::{Rand, RandomSeed, StdRand},
+    rands::{Rand, StdRand},
     shmem::{ShMemProvider, StdShMemProvider},
     tuples::tuple_list,
     AsSlice,
@@ -97,14 +98,14 @@ pub fn merge(
         }
     }
 
-    let edges = unsafe { core::mem::take(&mut COUNTERS_MAPS) };
+    let edges = unsafe { core::mem::take(&mut *addr_of_mut!(COUNTERS_MAPS)) };
     let edges_observer = MultiMapObserver::new("edges", edges);
 
     let time = TimeObserver::new("time");
     let edges_observer =
         MappedEdgeMapObserver::new(edges_observer, SizeTimeValueObserver::new(time));
 
-    let map_feedback = MinMapFeedback::tracking(&edges_observer, false, true);
+    let map_feedback = MinMapFeedback::new(&edges_observer);
 
     // Create an OOM observer to monitor if an OOM has occurred
     let oom_observer = OomObserver::new(options.rss_limit(), options.malloc_limit());
@@ -176,10 +177,14 @@ pub fn merge(
     };
 
     // Create the executor for an in-process function with one observer for edge coverage and one for the execution time
-    let mut executor = TimeoutExecutor::new(
-        InProcessExecutor::new(&mut harness, observers, &mut fuzzer, &mut state, &mut mgr)?,
+    let mut executor = InProcessExecutor::with_timeout(
+        &mut harness,
+        observers,
+        &mut fuzzer,
+        &mut state,
+        &mut mgr,
         options.timeout(),
-    );
+    )?;
 
     // In case the corpus is empty (on first run) or crashed while loading, reset
     if state.must_load_initial_inputs() && !options.dirs().is_empty() {
@@ -231,6 +236,8 @@ pub fn merge(
                     .scheduler_mut()
                     .on_remove(&mut state, idx, &Some(testcase))?;
             } else {
+                // False-positive: file_path is used just below
+                #[allow(clippy::needless_borrows_for_generic_args)]
                 rename(&file_path, &new_file_path)?;
                 *file_path = new_file_path;
             }

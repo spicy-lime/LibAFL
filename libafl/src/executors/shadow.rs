@@ -2,6 +2,8 @@
 
 use core::fmt::{self, Debug, Formatter};
 
+use libafl_bolts::tuples::RefIndexable;
+
 use crate::{
     executors::{Executor, ExitKind, HasObservers},
     observers::{ObserversTuple, UsesObservers},
@@ -19,8 +21,8 @@ pub struct ShadowExecutor<E, SOT> {
 
 impl<E, SOT> Debug for ShadowExecutor<E, SOT>
 where
-    E: UsesState + Debug,
-    SOT: ObserversTuple<E::State> + Debug,
+    E: Debug,
+    SOT: Debug,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ShadowExecutor")
@@ -33,7 +35,7 @@ where
 impl<E, SOT> ShadowExecutor<E, SOT>
 where
     E: HasObservers,
-    SOT: ObserversTuple<E::State>,
+    SOT: ObserversTuple<<Self as UsesState>::State>,
 {
     /// Create a new `ShadowExecutor`, wrapping the given `executor`.
     pub fn new(executor: E, shadow_observers: SOT) -> Self {
@@ -45,23 +47,23 @@ where
 
     /// The shadow observers are not considered by the feedbacks and the manager, mutable
     #[inline]
-    pub fn shadow_observers(&self) -> &SOT {
-        &self.shadow_observers
+    pub fn shadow_observers(&self) -> RefIndexable<&SOT, SOT> {
+        RefIndexable::from(&self.shadow_observers)
     }
 
     /// The shadow observers are not considered by the feedbacks and the manager, mutable
     #[inline]
-    pub fn shadow_observers_mut(&mut self) -> &mut SOT {
-        &mut self.shadow_observers
+    pub fn shadow_observers_mut(&mut self) -> RefIndexable<&mut SOT, SOT> {
+        RefIndexable::from(&mut self.shadow_observers)
     }
 }
 
 impl<E, EM, SOT, Z> Executor<EM, Z> for ShadowExecutor<E, SOT>
 where
     E: Executor<EM, Z> + HasObservers,
-    SOT: ObserversTuple<E::State>,
-    EM: UsesState<State = E::State>,
-    Z: UsesState<State = E::State>,
+    SOT: ObserversTuple<Self::State>,
+    EM: UsesState<State = Self::State>,
+    Z: UsesState<State = Self::State>,
 {
     fn run_target(
         &mut self,
@@ -70,9 +72,7 @@ where
         mgr: &mut EM,
         input: &Self::Input,
     ) -> Result<ExitKind, Error> {
-        let ret = self.executor.run_target(fuzzer, state, mgr, input);
-        self.executor.post_run_reset();
-        ret
+        self.executor.run_target(fuzzer, state, mgr, input)
     }
 }
 
@@ -93,15 +93,15 @@ where
 impl<E, SOT> HasObservers for ShadowExecutor<E, SOT>
 where
     E: HasObservers,
-    SOT: ObserversTuple<E::State>,
+    SOT: ObserversTuple<Self::State>,
 {
     #[inline]
-    fn observers(&self) -> &Self::Observers {
+    fn observers(&self) -> RefIndexable<&Self::Observers, Self::Observers> {
         self.executor.observers()
     }
 
     #[inline]
-    fn observers_mut(&mut self) -> &mut Self::Observers {
+    fn observers_mut(&mut self) -> RefIndexable<&mut Self::Observers, Self::Observers> {
         self.executor.observers_mut()
     }
 }

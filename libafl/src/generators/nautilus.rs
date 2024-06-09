@@ -6,10 +6,13 @@ use alloc::{
 use core::fmt::Debug;
 use std::{fs, io::BufReader, path::Path};
 
-use grammartec::context::Context;
-pub use grammartec::newtypes::NTermID;
+use libafl_bolts::rands::Rand;
 
-use crate::{generators::Generator, inputs::nautilus::NautilusInput, Error};
+pub use crate::common::nautilus::grammartec::newtypes::NTermId;
+use crate::{
+    common::nautilus::grammartec::context::Context, generators::Generator,
+    inputs::nautilus::NautilusInput, state::HasRand, Error,
+};
 
 /// The nautilus context for a generator
 pub struct NautilusContext {
@@ -39,6 +42,47 @@ impl NautilusContext {
         Self { ctx }
     }
 
+    /// Returns a new [`NautilusContext`] with support for non UTF-8 rules.
+    ///
+    /// - This has the same behaviour as [`NautilusContext::new`] but returns `None` if the `rules` are empty.
+    /// - The starting rule is `rules[0]`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use libafl::generators::nautilus::NautilusContext;
+    ///
+    /// // Create a simple grammar for a series of null-terminated data.
+    /// let null = vec![0];
+    /// let mut rules = vec![
+    ///     // rules[0] is considered the starting rule
+    ///     ("SERIES", "{DATA}{NULL}".as_bytes()),
+    ///     ("SERIES", "{SERIES}{SERIES}".as_bytes()),
+    ///     ("DATA", "".as_bytes()),
+    ///     ("DATA", "{BYTE}{DATA}".as_bytes()),
+    ///     ("NULL", &null),
+    /// ];
+    ///
+    /// let bytes: Vec<u8> = (1..=u8::MAX).collect();
+    /// for i in 0..bytes.len() {
+    ///     rules.push(("BYTE", &bytes[i..=i]));
+    /// }
+    ///
+    /// let context = NautilusContext::with_rules(100, &rules).unwrap();
+    /// ```
+    #[must_use]
+    pub fn with_rules(tree_depth: usize, rules: &[(&str, &[u8])]) -> Option<Self> {
+        let mut ctx = Context::new();
+        for (symbol, rule) in rules {
+            ctx.add_rule(symbol, rule);
+        }
+
+        let root = format!("{{{}}}", rules.first()?.0);
+        ctx.add_rule("START", root.as_bytes());
+        ctx.initialize(tree_depth);
+        Some(Self { ctx })
+    }
+
     /// Create a new [`NautilusContext`] from a file
     #[must_use]
     pub fn from_file<P: AsRef<Path>>(tree_depth: usize, grammar_file: P) -> Self {
@@ -63,12 +107,12 @@ impl Debug for NautilusGenerator<'_> {
     }
 }
 
-impl<'a, S> Generator<NautilusInput, S> for NautilusGenerator<'a> {
-    fn generate(&mut self, _state: &mut S) -> Result<NautilusInput, Error> {
+impl<'a, S: HasRand> Generator<NautilusInput, S> for NautilusGenerator<'a> {
+    fn generate(&mut self, state: &mut S) -> Result<NautilusInput, Error> {
         let nonterm = self.nonterminal("START");
         let len = self.ctx.get_random_len_for_nt(&nonterm);
         let mut input = NautilusInput::empty();
-        self.generate_from_nonterminal(&mut input, nonterm, len);
+        self.generate_from_nonterminal(state.rand_mut(), &mut input, nonterm, len);
         Ok(input)
     }
 }
@@ -83,12 +127,20 @@ impl<'a> NautilusGenerator<'a> {
     /// Gets the nonterminal from this input
     // TODO create from a python grammar
     #[must_use]
-    pub fn nonterminal(&self, name: &str) -> NTermID {
+    pub fn nonterminal(&self, name: &str) -> NTermId {
         self.ctx.nt_id(name)
     }
 
     /// Generates a [`NautilusInput`] from a nonterminal
-    pub fn generate_from_nonterminal(&self, input: &mut NautilusInput, start: NTermID, len: usize) {
-        input.tree_mut().generate_from_nt(start, len, self.ctx);
+    pub fn generate_from_nonterminal<R: Rand>(
+        &self,
+        rand: &mut R,
+        input: &mut NautilusInput,
+        start: NTermId,
+        len: usize,
+    ) {
+        input
+            .tree_mut()
+            .generate_from_nt(rand, start, len, self.ctx);
     }
 }

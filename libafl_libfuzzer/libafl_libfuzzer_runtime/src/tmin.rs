@@ -6,9 +6,9 @@ use std::{
 use libafl::{
     corpus::{Corpus, HasTestcase, InMemoryCorpus, Testcase},
     events::SimpleEventManager,
-    executors::{inprocess::TimeoutInProcessForkExecutor, ExitKind},
-    feedbacks::{CrashFeedbackFactory, TimeoutFeedbackFactory},
-    inputs::{BytesInput, HasBytesVec, HasTargetBytes},
+    executors::{inprocess_fork::InProcessForkExecutor, ExitKind},
+    feedbacks::{CrashFeedback, TimeoutFeedback},
+    inputs::{BytesInput, HasMutatorBytes, HasTargetBytes},
     mutators::{havoc_mutations_no_crossover, Mutator, StdScheduledMutator},
     schedulers::QueueScheduler,
     stages::StdTMinMutationalStage,
@@ -16,7 +16,7 @@ use libafl::{
     Error, Fuzzer, StdFuzzer,
 };
 use libafl_bolts::{
-    rands::{RandomSeed, RomuDuoJrRand, StdRand},
+    rands::{RomuDuoJrRand, StdRand},
     shmem::{ShMemProvider, StdShMemProvider},
     tuples::tuple_list,
     AsSlice, HasLen,
@@ -62,7 +62,7 @@ fn minimize_crash_with_mutator<M: Mutator<BytesInput, TMinState>>(
     let mut fuzzer = StdFuzzer::new(QueueScheduler::new(), (), ());
 
     let shmem_provider = StdShMemProvider::new()?;
-    let mut executor = TimeoutInProcessForkExecutor::new(
+    let mut executor = InProcessForkExecutor::new(
         &mut harness,
         (),
         &mut fuzzer,
@@ -79,7 +79,7 @@ fn minimize_crash_with_mutator<M: Mutator<BytesInput, TMinState>>(
 
     match exit_kind {
         ExitKind::Crash => {
-            let factory = CrashFeedbackFactory::default();
+            let factory = CrashFeedback::new();
             let tmin = StdTMinMutationalStage::new(
                 mutator,
                 factory,
@@ -93,7 +93,7 @@ fn minimize_crash_with_mutator<M: Mutator<BytesInput, TMinState>>(
             fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut mgr)?;
         }
         ExitKind::Timeout => {
-            let factory = TimeoutFeedbackFactory::default();
+            let factory = TimeoutFeedback::new();
             let tmin = StdTMinMutationalStage::new(
                 mutator,
                 factory,

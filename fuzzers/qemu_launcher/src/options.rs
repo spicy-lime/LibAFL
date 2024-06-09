@@ -48,10 +48,13 @@ pub struct FuzzerOptions {
     #[arg(long, help = "Cpu cores to use", default_value = "all", value_parser = Cores::from_cmdline)]
     pub cores: Cores,
 
-    #[arg(long, help = "Cpu cores to use to use for ASAN", value_parser = Cores::from_cmdline)]
+    #[arg(long, help = "Cpu cores to use for ASAN", value_parser = Cores::from_cmdline)]
     pub asan_cores: Option<Cores>,
 
-    #[arg(long, help = "Cpu cores to use to use for CmpLog", value_parser = Cores::from_cmdline)]
+    #[arg(long, help = "Cpu cores to use for ASAN", value_parser = Cores::from_cmdline)]
+    pub asan_guest_cores: Option<Cores>,
+
+    #[arg(long, help = "Cpu cores to use for CmpLog", value_parser = Cores::from_cmdline)]
     pub cmplog_cores: Option<Cores>,
 
     #[clap(short, long, help = "Enable output from the fuzzer clients")]
@@ -109,6 +112,12 @@ impl FuzzerOptions {
 
     pub fn is_asan_core(&self, core_id: CoreId) -> bool {
         self.asan_cores
+            .as_ref()
+            .map_or(false, |c| c.contains(core_id))
+    }
+
+    pub fn is_asan_guest_core(&self, core_id: CoreId) -> bool {
+        self.asan_guest_cores
             .as_ref()
             .map_or(false, |c| c.contains(core_id))
     }

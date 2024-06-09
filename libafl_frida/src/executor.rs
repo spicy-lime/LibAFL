@@ -7,7 +7,7 @@ use frida_gum::{
 };
 #[cfg(windows)]
 use libafl::{
-    executors::inprocess::{HasInProcessHandlers, InProcessHandlers},
+    executors::{hooks::inprocess::InProcessHooks, inprocess::HasInProcessHooks},
     state::{HasCorpus, HasSolutions},
 };
 use libafl::{
@@ -17,9 +17,10 @@ use libafl::{
     state::{HasExecutions, State, UsesState},
     Error,
 };
+use libafl_bolts::tuples::RefIndexable;
 
-#[cfg(unix)]
-use crate::asan::errors::ASAN_ERRORS;
+#[cfg(not(test))]
+use crate::asan::errors::AsanErrors;
 use crate::helper::{FridaInstrumentationHelper, FridaRuntimeTuple};
 #[cfg(windows)]
 use crate::windows_hooks::initialize;
@@ -31,7 +32,7 @@ where
     S::Input: HasTargetBytes,
     S: State,
     OT: ObserversTuple<S>,
-    'a: 'b,
+    'b: 'a,
 {
     base: InProcessExecutor<'a, H, OT, S>,
     // thread_id for the Stalker
@@ -102,11 +103,14 @@ where
         if self.helper.stalker_enabled() {
             self.stalker.deactivate();
         }
-        #[cfg(unix)]
+
+        #[cfg(not(test))]
         unsafe {
-            if ASAN_ERRORS.is_some() && !ASAN_ERRORS.as_ref().unwrap().is_empty() {
-                log::error!("Crashing target as it had ASAN errors");
+            if !AsanErrors::get_mut_blocking().is_empty() {
+                log::error!("Crashing target as it had ASan errors");
                 libc::raise(libc::SIGABRT);
+                #[cfg(windows)]
+                std::process::abort();
             }
         }
         self.helper.post_exec(input)?;
@@ -142,12 +146,12 @@ where
     OT: ObserversTuple<S>,
 {
     #[inline]
-    fn observers(&self) -> &OT {
+    fn observers(&self) -> RefIndexable<&Self::Observers, Self::Observers> {
         self.base.observers()
     }
 
     #[inline]
-    fn observers_mut(&mut self) -> &mut OT {
+    fn observers_mut(&mut self) -> RefIndexable<&mut Self::Observers, Self::Observers> {
         self.base.observers_mut()
     }
 }
@@ -202,6 +206,7 @@ where
             }
         }
 
+        log::info!("disable_excludes: {:}", helper.disable_excludes);
         if !helper.disable_excludes {
             for range in ranges.gaps(&(0..usize::MAX)) {
                 log::info!("excluding range: {:x}-{:x}", range.start, range.end);
@@ -213,7 +218,7 @@ where
         }
 
         #[cfg(windows)]
-        initialize(&gum);
+        initialize(gum);
 
         Self {
             base,
@@ -227,7 +232,7 @@ where
 }
 
 #[cfg(windows)]
-impl<'a, 'b, 'c, H, OT, RT, S> HasInProcessHandlers
+impl<'a, 'b, 'c, H, OT, RT, S> HasInProcessHooks<S>
     for FridaInProcessExecutor<'a, 'b, 'c, H, OT, RT, S>
 where
     H: FnMut(&S::Input) -> ExitKind,
@@ -238,7 +243,13 @@ where
 {
     /// the timeout handler
     #[inline]
-    fn inprocess_handlers(&self) -> &InProcessHandlers {
-        &self.base.handlers()
+    fn inprocess_hooks(&self) -> &InProcessHooks<S> {
+        &self.base.hooks().0
+    }
+
+    /// the timeout handler
+    #[inline]
+    fn inprocess_hooks_mut(&mut self) -> &mut InProcessHooks<S> {
+        &mut self.base.hooks_mut().0
     }
 }

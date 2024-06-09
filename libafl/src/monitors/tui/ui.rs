@@ -5,7 +5,6 @@ use std::{
 };
 
 use ratatui::{
-    backend::Backend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols,
@@ -94,10 +93,7 @@ impl TuiUI {
         }
     }
 
-    pub fn draw<B>(&mut self, f: &mut Frame<B>, app: &Arc<RwLock<TuiContext>>)
-    where
-        B: Backend,
-    {
+    pub fn draw(&mut self, f: &mut Frame, app: &Arc<RwLock<TuiContext>>) {
         self.clients = app.read().unwrap().clients_num;
 
         let body = Layout::default()
@@ -111,8 +107,8 @@ impl TuiUI {
                     .as_ref()
                 } else {
                     [
-                        Constraint::Percentage(41),
-                        Constraint::Percentage(27),
+                        Constraint::Percentage(20),
+                        Constraint::Percentage(48),
                         Constraint::Percentage(32),
                     ]
                     .as_ref()
@@ -134,10 +130,7 @@ impl TuiUI {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn draw_overall_ui<B>(&mut self, f: &mut Frame<B>, app: &Arc<RwLock<TuiContext>>, area: Rect)
-    where
-        B: Backend,
-    {
+    fn draw_overall_ui(&mut self, f: &mut Frame, app: &Arc<RwLock<TuiContext>>, area: Rect) {
         let top_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(16), Constraint::Min(0)].as_ref())
@@ -252,10 +245,7 @@ impl TuiUI {
         self.draw_overall_generic_text(f, app, bottom_layout);
     }
 
-    fn draw_client_ui<B>(&mut self, f: &mut Frame<B>, app: &Arc<RwLock<TuiContext>>, area: Rect)
-    where
-        B: Backend,
-    {
+    fn draw_client_ui(&mut self, f: &mut Frame, app: &Arc<RwLock<TuiContext>>, area: Rect) {
         let client_block = Block::default()
             .title(Span::styled(
                 format!("client #{} (l/r arrows to switch)", self.clients_idx),
@@ -264,16 +254,20 @@ impl TuiUI {
                     .add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL);
-        let client_area = client_block.inner(area);
+
+        #[allow(unused_mut)]
+        let mut client_area = client_block.inner(area);
         f.render_widget(client_block, area);
 
         #[cfg(feature = "introspection")]
         {
-            let introspection_layout = Layout::default()
+            let client_layout = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(11), Constraint::Min(0)].as_ref())
-                .split(client_area)[1];
-            self.draw_introspection_text(f, app, introspection_layout);
+                .constraints([Constraint::Min(11), Constraint::Percentage(50)].as_ref())
+                .split(client_area);
+            client_area = client_layout[0];
+            let instrospection_layout = client_layout[1];
+            self.draw_introspection_text(f, app, instrospection_layout);
         }
 
         let left_layout = Layout::default()
@@ -300,16 +294,14 @@ impl TuiUI {
     }
 
     #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
-    fn draw_time_chart<B>(
+    fn draw_time_chart(
         &mut self,
         title: &str,
         y_name: &str,
-        f: &mut Frame<B>,
+        f: &mut Frame,
         area: Rect,
         stats: &TimedStats,
-    ) where
-        B: Backend,
-    {
+    ) {
         if stats.series.is_empty() {
             return;
         }
@@ -426,15 +418,13 @@ impl TuiUI {
         f.render_widget(chart, area);
     }
 
-    fn draw_item_geometry_text<B>(
+    fn draw_item_geometry_text(
         &mut self,
-        f: &mut Frame<B>,
+        f: &mut Frame,
         app: &Arc<RwLock<TuiContext>>,
         area: Rect,
         is_overall: bool,
-    ) where
-        B: Backend,
-    {
+    ) {
         let item_geometry: ItemGeometry = if is_overall {
             app.read().unwrap().total_item_geometry.clone()
         } else if self.clients < 2 {
@@ -482,7 +472,8 @@ impl TuiUI {
             )
             .split(area);
 
-        let table = Table::new(items)
+        let table = Table::default()
+            .rows(items)
             .block(
                 Block::default()
                     .title(Span::styled(
@@ -493,19 +484,17 @@ impl TuiUI {
                     ))
                     .borders(Borders::ALL),
             )
-            .widths(&[Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
+            .widths([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
         f.render_widget(table, chunks[0]);
     }
 
-    fn draw_process_timing_text<B>(
+    fn draw_process_timing_text(
         &mut self,
-        f: &mut Frame<B>,
+        f: &mut Frame,
         app: &Arc<RwLock<TuiContext>>,
         area: Rect,
         is_overall: bool,
-    ) where
-        B: Backend,
-    {
+    ) {
         let tup: (Duration, ProcessTiming) = if is_overall {
             let tui_context = app.read().unwrap();
             (
@@ -556,7 +545,8 @@ impl TuiUI {
             )
             .split(area);
 
-        let table = Table::new(items)
+        let table = Table::default()
+            .rows(items)
             .block(
                 Block::default()
                     .title(Span::styled(
@@ -567,51 +557,44 @@ impl TuiUI {
                     ))
                     .borders(Borders::ALL),
             )
-            .widths(&[Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
+            .widths([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
         f.render_widget(table, chunks[0]);
     }
 
-    fn draw_overall_generic_text<B>(
+    fn draw_overall_generic_text(
         &mut self,
-        f: &mut Frame<B>,
+        f: &mut Frame,
         app: &Arc<RwLock<TuiContext>>,
         area: Rect,
-    ) where
-        B: Backend,
-    {
-        let items = vec![
-            Row::new(vec![
-                Cell::from(Span::raw("clients")),
-                Cell::from(Span::raw(format!("{}", self.clients))),
-                Cell::from(Span::raw("total execs")),
-                Cell::from(Span::raw(format!("{}", app.read().unwrap().total_execs))),
-                Cell::from(Span::raw("map density")),
-                Cell::from(Span::raw(app.read().unwrap().total_map_density.to_string())),
-            ]),
-            Row::new(vec![
-                Cell::from(Span::raw("solutions")),
-                Cell::from(Span::raw(format!(
-                    "{}",
-                    app.read().unwrap().total_solutions
-                ))),
-                Cell::from(Span::raw("cycle done")),
-                Cell::from(Span::raw(format!(
-                    "{}",
-                    app.read().unwrap().total_cycles_done
-                ))),
-                Cell::from(Span::raw("corpus count")),
-                Cell::from(Span::raw(format!(
-                    "{}",
-                    app.read().unwrap().total_corpus_count
-                ))),
-            ]),
-        ];
+    ) {
+        let items = {
+            let app = app.read().unwrap();
+            vec![
+                Row::new(vec![
+                    Cell::from(Span::raw("clients")),
+                    Cell::from(Span::raw(format!("{}", self.clients))),
+                    Cell::from(Span::raw("total execs")),
+                    Cell::from(Span::raw(format!("{}", app.total_execs))),
+                    Cell::from(Span::raw("map density")),
+                    Cell::from(Span::raw(app.total_map_density.to_string())),
+                ]),
+                Row::new(vec![
+                    Cell::from(Span::raw("solutions")),
+                    Cell::from(Span::raw(format!("{}", app.total_solutions))),
+                    Cell::from(Span::raw("cycle done")),
+                    Cell::from(Span::raw(format!("{}", app.total_cycles_done))),
+                    Cell::from(Span::raw("corpus count")),
+                    Cell::from(Span::raw(format!("{}", app.total_corpus_count))),
+                ]),
+            ]
+        };
 
         let chunks = Layout::default()
             .constraints([Constraint::Percentage(100)].as_ref())
             .split(area);
 
-        let table = Table::new(items)
+        let table = Table::default()
+            .rows(items)
             .block(
                 Block::default()
                     .title(Span::styled(
@@ -622,7 +605,7 @@ impl TuiUI {
                     ))
                     .borders(Borders::ALL),
             )
-            .widths(&[
+            .widths([
                 Constraint::Percentage(15),
                 Constraint::Percentage(16),
                 Constraint::Percentage(15),
@@ -633,44 +616,42 @@ impl TuiUI {
         f.render_widget(table, chunks[0]);
     }
 
-    fn draw_client_results_text<B>(
+    fn draw_client_results_text(
         &mut self,
-        f: &mut Frame<B>,
+        f: &mut Frame,
         app: &Arc<RwLock<TuiContext>>,
         area: Rect,
-    ) where
-        B: Backend,
-    {
-        let items = vec![
-            Row::new(vec![
-                Cell::from(Span::raw("cycles done")),
-                Cell::from(Span::raw(format!(
-                    "{}",
-                    app.read()
-                        .unwrap()
-                        .clients
-                        .get(&self.clients_idx)
-                        .map_or(0, |x| x.cycles_done)
-                ))),
-            ]),
-            Row::new(vec![
-                Cell::from(Span::raw("solutions")),
-                Cell::from(Span::raw(format!(
-                    "{}",
-                    app.read()
-                        .unwrap()
-                        .clients
-                        .get(&self.clients_idx)
-                        .map_or(0, |x| x.objectives)
-                ))),
-            ]),
-        ];
+    ) {
+        let items = {
+            let app = app.read().unwrap();
+            vec![
+                Row::new(vec![
+                    Cell::from(Span::raw("cycles done")),
+                    Cell::from(Span::raw(format!(
+                        "{}",
+                        app.clients
+                            .get(&self.clients_idx)
+                            .map_or(0, |x| x.cycles_done)
+                    ))),
+                ]),
+                Row::new(vec![
+                    Cell::from(Span::raw("solutions")),
+                    Cell::from(Span::raw(format!(
+                        "{}",
+                        app.clients
+                            .get(&self.clients_idx)
+                            .map_or(0, |x| x.objectives)
+                    ))),
+                ]),
+            ]
+        };
 
         let chunks = Layout::default()
             .constraints([Constraint::Percentage(100)].as_ref())
             .split(area);
 
-        let table = Table::new(items)
+        let table = Table::default()
+            .rows(items)
             .block(
                 Block::default()
                     .title(Span::styled(
@@ -681,58 +662,52 @@ impl TuiUI {
                     ))
                     .borders(Borders::ALL),
             )
-            .widths(&[Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
+            .widths([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
         f.render_widget(table, chunks[0]);
     }
 
-    fn draw_client_generic_text<B>(
+    fn draw_client_generic_text(
         &mut self,
-        f: &mut Frame<B>,
+        f: &mut Frame,
         app: &Arc<RwLock<TuiContext>>,
         area: Rect,
-    ) where
-        B: Backend,
-    {
-        let items = vec![
-            Row::new(vec![
-                Cell::from(Span::raw("corpus count")),
-                Cell::from(Span::raw(format!(
-                    "{}",
-                    app.read()
-                        .unwrap()
-                        .clients
-                        .get(&self.clients_idx)
-                        .map_or(0, |x| x.corpus)
-                ))),
-            ]),
-            Row::new(vec![
-                Cell::from(Span::raw("total execs")),
-                Cell::from(Span::raw(format!(
-                    "{}",
-                    app.read()
-                        .unwrap()
-                        .clients
-                        .get(&self.clients_idx)
-                        .map_or(0, |x| x.executions)
-                ))),
-            ]),
-            Row::new(vec![
-                Cell::from(Span::raw("map density")),
-                Cell::from(Span::raw(
-                    app.read()
-                        .unwrap()
-                        .clients
-                        .get(&self.clients_idx)
-                        .map_or("0%".to_string(), |x| x.map_density.to_string()),
-                )),
-            ]),
-        ];
+    ) {
+        let items = {
+            let app = app.read().unwrap();
+            vec![
+                Row::new(vec![
+                    Cell::from(Span::raw("corpus count")),
+                    Cell::from(Span::raw(format!(
+                        "{}",
+                        app.clients.get(&self.clients_idx).map_or(0, |x| x.corpus)
+                    ))),
+                ]),
+                Row::new(vec![
+                    Cell::from(Span::raw("total execs")),
+                    Cell::from(Span::raw(format!(
+                        "{}",
+                        app.clients
+                            .get(&self.clients_idx)
+                            .map_or(0, |x| x.executions)
+                    ))),
+                ]),
+                Row::new(vec![
+                    Cell::from(Span::raw("map density")),
+                    Cell::from(Span::raw(
+                        app.clients
+                            .get(&self.clients_idx)
+                            .map_or("0%".to_string(), |x| x.map_density.to_string()),
+                    )),
+                ]),
+            ]
+        };
 
         let chunks = Layout::default()
             .constraints([Constraint::Percentage(100)].as_ref())
             .split(area);
 
-        let table = Table::new(items)
+        let table = Table::default()
+            .rows(items)
             .block(
                 Block::default()
                     .title(Span::styled(
@@ -743,19 +718,17 @@ impl TuiUI {
                     ))
                     .borders(Borders::ALL),
             )
-            .widths(&[Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
+            .widths([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
         f.render_widget(table, chunks[0]);
     }
 
     #[cfg(feature = "introspection")]
-    fn draw_introspection_text<B>(
+    fn draw_introspection_text(
         &mut self,
-        f: &mut Frame<B>,
+        f: &mut Frame,
         app: &Arc<RwLock<TuiContext>>,
         area: Rect,
-    ) where
-        B: Backend,
-    {
+    ) {
         let mut items = vec![];
         {
             let ctx = app.read().unwrap();
@@ -794,7 +767,8 @@ impl TuiUI {
             };
         }
 
-        let table = Table::new(items)
+        let table = Table::default()
+            .rows(items)
             .block(
                 Block::default()
                     .title(Span::styled(
@@ -805,14 +779,11 @@ impl TuiUI {
                     ))
                     .borders(Borders::ALL),
             )
-            .widths(&[Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
+            .widths([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
         f.render_widget(table, area);
     }
     #[allow(clippy::unused_self)]
-    fn draw_logs<B>(&mut self, f: &mut Frame<B>, app: &Arc<RwLock<TuiContext>>, area: Rect)
-    where
-        B: Backend,
-    {
+    fn draw_logs(&mut self, f: &mut Frame, app: &Arc<RwLock<TuiContext>>, area: Rect) {
         let app = app.read().unwrap();
         let logs: Vec<ListItem> = app
             .client_logs

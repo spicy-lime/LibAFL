@@ -1,19 +1,24 @@
-use core::ptr::addr_of_mut;
-use std::process;
+use core::{fmt::Debug, ptr::addr_of_mut};
+use std::{marker::PhantomData, process};
 
+#[cfg(feature = "simplemgr")]
+use libafl::events::SimpleEventManager;
+#[cfg(not(feature = "simplemgr"))]
+use libafl::events::{LlmpRestartingEventManager, MonitorTypedEventManager};
 use libafl::{
     corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
-    events::{EventRestarter, LlmpRestartingEventManager},
-    executors::{ShadowExecutor, TimeoutExecutor},
+    events::EventRestarter,
+    executors::ShadowExecutor,
     feedback_or, feedback_or_fast,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback, TimeoutFeedback},
     fuzzer::{Evaluator, Fuzzer, StdFuzzer},
     inputs::BytesInput,
+    monitors::Monitor,
     mutators::{
         scheduled::havoc_mutations, token_mutations::I2SRandReplace, tokens_mutations,
         StdMOptMutator, StdScheduledMutator, Tokens,
     },
-    observers::{HitcountsMapObserver, TimeObserver, VariableMapObserver},
+    observers::{CanTrack, HitcountsMapObserver, TimeObserver, VariableMapObserver},
     schedulers::{
         powersched::PowerSchedule, IndexesLenTimeMinimizerScheduler, PowerQueueScheduler,
     },
@@ -21,21 +26,22 @@ use libafl::{
         calibrate::CalibrationStage, power::StdPowerMutationalStage, ShadowTracingStage,
         StagesTuple, StdMutationalStage,
     },
-    state::{HasCorpus, HasMetadata, StdState, UsesState},
-    Error,
+    state::{HasCorpus, StdState, UsesState},
+    Error, HasMetadata,
 };
+#[cfg(not(feature = "simplemgr"))]
+use libafl_bolts::shmem::StdShMemProvider;
 use libafl_bolts::{
     core_affinity::CoreId,
-    current_nanos,
+    ownedref::OwnedMutSlice,
     rands::StdRand,
-    shmem::StdShMemProvider,
     tuples::{tuple_list, Merge},
 };
 use libafl_qemu::{
     cmplog::CmpLogObserver,
-    edges::{edges_map_mut_slice, MAX_EDGES_NUM},
-    helper::QemuHelperTuple,
-    Emulator, QemuExecutor, QemuHooks,
+    edges::{edges_map_mut_ptr, EDGES_MAP_SIZE_IN_USE, MAX_EDGES_FOUND},
+    helpers::QemuHelperTuple,
+    Qemu, QemuExecutor, QemuHooks,
 };
 use typed_builder::TypedBuilder;
 
@@ -44,37 +50,44 @@ use crate::{harness::Harness, options::FuzzerOptions};
 pub type ClientState =
     StdState<BytesInput, InMemoryOnDiskCorpus<BytesInput>, StdRand, OnDiskCorpus<BytesInput>>;
 
-pub type ClientMgr = LlmpRestartingEventManager<ClientState, StdShMemProvider>;
+#[cfg(feature = "simplemgr")]
+pub type ClientMgr<M> = SimpleEventManager<M, ClientState>;
+#[cfg(not(feature = "simplemgr"))]
+pub type ClientMgr<M> =
+    MonitorTypedEventManager<LlmpRestartingEventManager<(), ClientState, StdShMemProvider>, M>;
 
 #[derive(TypedBuilder)]
-pub struct Instance<'a> {
+pub struct Instance<'a, M: Monitor> {
     options: &'a FuzzerOptions,
-    emu: &'a Emulator,
-    mgr: ClientMgr,
+    qemu: &'a Qemu,
+    mgr: ClientMgr<M>,
     core_id: CoreId,
     extra_tokens: Option<Vec<String>>,
+    #[builder(default=PhantomData)]
+    phantom: PhantomData<M>,
 }
 
-impl<'a> Instance<'a> {
+impl<'a, M: Monitor> Instance<'a, M> {
     pub fn run<QT>(&mut self, helpers: QT, state: Option<ClientState>) -> Result<(), Error>
     where
-        QT: QemuHelperTuple<ClientState>,
+        QT: QemuHelperTuple<ClientState> + Debug,
     {
-        let mut hooks = QemuHooks::new(self.emu.clone(), helpers);
+        let mut hooks = QemuHooks::new(*self.qemu, helpers);
 
         // Create an observation channel using the coverage map
         let edges_observer = unsafe {
             HitcountsMapObserver::new(VariableMapObserver::from_mut_slice(
                 "edges",
-                edges_map_mut_slice(),
-                addr_of_mut!(MAX_EDGES_NUM),
+                OwnedMutSlice::from_raw_parts_mut(edges_map_mut_ptr(), EDGES_MAP_SIZE_IN_USE),
+                addr_of_mut!(MAX_EDGES_FOUND),
             ))
+            .track_indices()
         };
 
         // Create an observation channel to keep track of the execution time
         let time_observer = TimeObserver::new("time");
 
-        let map_feedback = MaxMapFeedback::tracking(&edges_observer, true, false);
+        let map_feedback = MaxMapFeedback::new(&edges_observer);
 
         let calibration = CalibrationStage::new(&map_feedback);
 
@@ -84,7 +97,7 @@ impl<'a> Instance<'a> {
             // New maximization map feedback linked to the edges observer and the feedback state
             map_feedback,
             // Time feedback, this one does not need a feedback state
-            TimeFeedback::with_observer(&time_observer)
+            TimeFeedback::new(&time_observer)
         );
 
         // A feedback to choose if an input is a solution or not
@@ -96,7 +109,7 @@ impl<'a> Instance<'a> {
             None => {
                 StdState::new(
                     // RNG
-                    StdRand::with_seed(current_nanos()),
+                    StdRand::new(),
                     // Corpus that will be evolved, we keep it in memory for performance
                     InMemoryOnDiskCorpus::no_meta(self.options.queue_dir(self.core_id))?,
                     // Corpus in which we store solutions (crashes in this example),
@@ -112,11 +125,10 @@ impl<'a> Instance<'a> {
         };
 
         // A minimization+queue policy to get testcasess from the corpus
-        let scheduler = IndexesLenTimeMinimizerScheduler::new(PowerQueueScheduler::new(
-            &mut state,
+        let scheduler = IndexesLenTimeMinimizerScheduler::new(
             &edges_observer,
-            PowerSchedule::FAST,
-        ));
+            PowerQueueScheduler::new(&mut state, &edges_observer, PowerSchedule::FAST),
+        );
 
         let observers = tuple_list!(edges_observer, time_observer);
 
@@ -135,7 +147,7 @@ impl<'a> Instance<'a> {
 
         state.add_metadata(tokens);
 
-        let harness = Harness::new(self.emu)?;
+        let harness = Harness::new(self.qemu)?;
         let mut harness = |input: &BytesInput| harness.run(input);
 
         // A fuzzer with feedbacks and a corpus scheduler
@@ -150,10 +162,8 @@ impl<'a> Instance<'a> {
                 &mut fuzzer,
                 &mut state,
                 &mut self.mgr,
+                self.options.timeout,
             )?;
-
-            // Wrap the executor to keep track of the timeout
-            let executor = TimeoutExecutor::new(executor, self.options.timeout);
 
             // Create an observation channel using cmplog map
             let cmplog_observer = CmpLogObserver::new("cmplog", true);
@@ -183,17 +193,15 @@ impl<'a> Instance<'a> {
             self.fuzz(&mut state, &mut fuzzer, &mut executor, &mut stages)
         } else {
             // Create a QEMU in-process executor
-            let executor = QemuExecutor::new(
+            let mut executor = QemuExecutor::new(
                 &mut hooks,
                 &mut harness,
                 observers,
                 &mut fuzzer,
                 &mut state,
                 &mut self.mgr,
+                self.options.timeout,
             )?;
-
-            // Wrap the executor to keep track of the timeout
-            let mut executor = TimeoutExecutor::new(executor, self.options.timeout);
 
             // Setup an havoc mutator with a mutational stage
             let mutator = StdScheduledMutator::new(havoc_mutations().merge(tokens_mutations()));
@@ -211,11 +219,11 @@ impl<'a> Instance<'a> {
         stages: &mut ST,
     ) -> Result<(), Error>
     where
-        Z: Fuzzer<E, ClientMgr, ST>
+        Z: Fuzzer<E, ClientMgr<M>, ST>
             + UsesState<State = ClientState>
-            + Evaluator<E, ClientMgr, State = ClientState>,
+            + Evaluator<E, ClientMgr<M>, State = ClientState>,
         E: UsesState<State = ClientState>,
-        ST: StagesTuple<E, ClientMgr, ClientState, Z>,
+        ST: StagesTuple<E, ClientMgr<M>, ClientState, Z>,
     {
         let corpus_dirs = [self.options.input_dir()];
 

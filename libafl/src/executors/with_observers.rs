@@ -2,6 +2,8 @@
 
 use core::fmt::Debug;
 
+use libafl_bolts::tuples::RefIndexable;
+
 use crate::{
     executors::{Executor, ExitKind, HasObservers},
     observers::{ObserversTuple, UsesObservers},
@@ -19,8 +21,8 @@ pub struct WithObservers<E, OT> {
 impl<E, EM, OT, Z> Executor<EM, Z> for WithObservers<E, OT>
 where
     E: Executor<EM, Z>,
-    EM: UsesState<State = E::State>,
-    Z: UsesState<State = E::State>,
+    EM: UsesState<State = Self::State>,
+    Z: UsesState<State = Self::State>,
 {
     fn run_target(
         &mut self,
@@ -29,9 +31,7 @@ where
         mgr: &mut EM,
         input: &Self::Input,
     ) -> Result<ExitKind, Error> {
-        let ret = self.executor.run_target(fuzzer, state, mgr, input);
-        self.executor.post_run_reset();
-        ret
+        self.executor.run_target(fuzzer, state, mgr, input)
     }
 }
 
@@ -45,7 +45,7 @@ where
 impl<E, OT> UsesObservers for WithObservers<E, OT>
 where
     E: UsesState,
-    OT: ObserversTuple<E::State>,
+    OT: ObserversTuple<Self::State>,
 {
     type Observers = OT;
 }
@@ -53,14 +53,14 @@ where
 impl<E, OT> HasObservers for WithObservers<E, OT>
 where
     E: UsesState,
-    OT: ObserversTuple<E::State>,
+    OT: ObserversTuple<Self::State>,
 {
-    fn observers(&self) -> &OT {
-        &self.observers
+    fn observers(&self) -> RefIndexable<&Self::Observers, Self::Observers> {
+        RefIndexable::from(&self.observers)
     }
 
-    fn observers_mut(&mut self) -> &mut OT {
-        &mut self.observers
+    fn observers_mut(&mut self) -> RefIndexable<&mut Self::Observers, Self::Observers> {
+        RefIndexable::from(&mut self.observers)
     }
 }
 

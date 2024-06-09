@@ -11,8 +11,8 @@ use crate::{
     corpus::{Corpus, CorpusId},
     inputs::UsesInput,
     stages::Stage,
-    state::{HasCorpus, HasMetadata, HasRand, HasSolutions, UsesState},
-    Error,
+    state::{HasCorpus, HasRand, HasSolutions, UsesState},
+    Error, HasMetadata,
 };
 
 /// Metadata used to store information about disk dump indexes for names
@@ -46,20 +46,18 @@ where
 
 impl<CB, E, EM, Z> Stage<E, EM, Z> for DumpToDiskStage<CB, EM, Z>
 where
-    CB: FnMut(&<Z::State as UsesInput>::Input, &Z::State) -> Vec<u8>,
-    EM: UsesState<State = Z::State>,
-    E: UsesState<State = Z::State>,
-    Z: UsesState,
-    Z::State: HasCorpus + HasSolutions + HasRand + HasMetadata,
+    CB: FnMut(&<Self::State as UsesInput>::Input, &Self::State) -> Vec<u8>,
+    EM: UsesState,
+    E: UsesState<State = Self::State>,
+    Z: UsesState<State = Self::State>,
+    Self::State: HasCorpus + HasSolutions + HasRand + HasMetadata,
 {
-    type Progress = (); // if this fails, we have bigger problems
-
     #[inline]
     fn perform(
         &mut self,
         _fuzzer: &mut Z,
         _executor: &mut E,
-        state: &mut Z::State,
+        state: &mut Self::State,
         _manager: &mut EM,
     ) -> Result<(), Error> {
         let (mut corpus_idx, mut solutions_idx) =
@@ -115,13 +113,25 @@ where
 
         Ok(())
     }
+
+    #[inline]
+    fn restart_progress_should_run(&mut self, _state: &mut Self::State) -> Result<bool, Error> {
+        // Not executing the target, so restart safety is not needed
+        Ok(true)
+    }
+
+    #[inline]
+    fn clear_restart_progress(&mut self, _state: &mut Self::State) -> Result<(), Error> {
+        // Not executing the target, so restart safety is not needed
+        Ok(())
+    }
 }
 
 impl<CB, EM, Z> DumpToDiskStage<CB, EM, Z>
 where
-    EM: UsesState<State = Z::State>,
+    EM: UsesState,
     Z: UsesState,
-    Z::State: HasCorpus + HasSolutions + HasRand + HasMetadata,
+    <Self as UsesState>::State: HasCorpus + HasSolutions + HasRand + HasMetadata,
 {
     /// Create a new [`DumpToDiskStage`]
     pub fn new<A, B>(to_bytes: CB, corpus_dir: A, solutions_dir: B) -> Result<Self, Error>
@@ -132,13 +142,19 @@ where
         let corpus_dir = corpus_dir.into();
         if let Err(e) = fs::create_dir(&corpus_dir) {
             if !corpus_dir.is_dir() {
-                return Err(Error::file(e));
+                return Err(Error::os_error(
+                    e,
+                    format!("Error creating directory {corpus_dir:?}"),
+                ));
             }
         }
         let solutions_dir = solutions_dir.into();
         if let Err(e) = fs::create_dir(&solutions_dir) {
             if !corpus_dir.is_dir() {
-                return Err(Error::file(e));
+                return Err(Error::os_error(
+                    e,
+                    format!("Error creating directory {solutions_dir:?}"),
+                ));
             }
         }
         Ok(Self {

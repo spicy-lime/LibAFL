@@ -28,15 +28,32 @@ impl<I> Corpus for NopCorpus<I>
 where
     I: Input,
 {
-    /// Returns the number of elements
+    /// Returns the number of all enabled entries
     #[inline]
     fn count(&self) -> usize {
         0
     }
 
-    /// Add an entry to the corpus and return its index
+    /// Returns the number of all disabled entries
+    fn count_disabled(&self) -> usize {
+        0
+    }
+
+    /// Returns the number of all entries
+    #[inline]
+    fn count_all(&self) -> usize {
+        0
+    }
+
+    /// Add an enabled testcase to the corpus and return its index
     #[inline]
     fn add(&mut self, _testcase: Testcase<I>) -> Result<CorpusId, Error> {
+        Err(Error::unsupported("Unsupported by NopCorpus"))
+    }
+
+    /// Add a disabled testcase to the corpus and return its index
+    #[inline]
+    fn add_disabled(&mut self, _testcase: Testcase<I>) -> Result<CorpusId, Error> {
         Err(Error::unsupported("Unsupported by NopCorpus"))
     }
 
@@ -46,15 +63,21 @@ where
         Err(Error::unsupported("Unsupported by NopCorpus"))
     }
 
-    /// Removes an entry from the corpus, returning it if it was present.
+    /// Removes an entry from the corpus, returning it if it was present; considers both enabled and disabled testcases
     #[inline]
     fn remove(&mut self, _idx: CorpusId) -> Result<Testcase<I>, Error> {
         Err(Error::unsupported("Unsupported by NopCorpus"))
     }
 
-    /// Get by id
+    /// Get by id; considers only enabled testcases
     #[inline]
     fn get(&self, _idx: CorpusId) -> Result<&RefCell<Testcase<I>>, Error> {
+        Err(Error::unsupported("Unsupported by NopCorpus"))
+    }
+
+    /// Get by id; considers both enabled and disabled testcases
+    #[inline]
+    fn get_from_all(&self, _idx: CorpusId) -> Result<&RefCell<Testcase<I>>, Error> {
         Err(Error::unsupported("Unsupported by NopCorpus"))
     }
 
@@ -62,6 +85,12 @@ where
     #[inline]
     fn current(&self) -> &Option<CorpusId> {
         &self.empty
+    }
+
+    /// Peek the next free corpus id
+    #[inline]
+    fn peek_free_id(&self) -> CorpusId {
+        CorpusId::from(0_usize)
     }
 
     /// Current testcase scheduled (mutable)
@@ -90,8 +119,15 @@ where
         None
     }
 
+    /// Get the nth corpus id; considers only enabled testcases
     #[inline]
     fn nth(&self, _nth: usize) -> CorpusId {
+        CorpusId::from(0_usize)
+    }
+
+    /// Get the nth corpus id; considers both enabled and disabled testcases
+    #[inline]
+    fn nth_from_all(&self, _nth: usize) -> CorpusId {
         CorpusId::from(0_usize)
     }
 

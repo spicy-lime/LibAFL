@@ -10,7 +10,11 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use core::{mem::ManuallyDrop, ptr::addr_of};
+use core::{
+    mem::ManuallyDrop,
+    ops::{Deref, DerefMut},
+    ptr::addr_of,
+};
 #[cfg(target_vendor = "apple")]
 use std::fs;
 use std::{
@@ -18,6 +22,7 @@ use std::{
     env,
     io::{Read, Write},
     marker::PhantomData,
+    os::fd::{AsFd, BorrowedFd},
     rc::{Rc, Weak},
     sync::{Arc, Condvar, Mutex},
     thread::JoinHandle,
@@ -32,6 +37,7 @@ use std::{
 };
 
 use hashbrown::HashMap;
+use nix::poll::PollTimeout;
 #[cfg(all(feature = "std", unix))]
 use nix::poll::{poll, PollFd, PollFlags};
 use serde::{Deserialize, Serialize};
@@ -40,7 +46,7 @@ use uds::{UnixListenerExt, UnixSocketAddr, UnixStreamExt};
 
 use crate::{
     shmem::{ShMem, ShMemDescription, ShMemId, ShMemProvider},
-    AsMutSlice, AsSlice, Error,
+    Error,
 };
 
 /// The default server name for our abstract shmem server
@@ -53,7 +59,7 @@ const UNIX_SERVER_NAME: &str = "./libafl_unix_shmem_server";
 /// Env variable. If set, we won't try to spawn the service
 const AFL_SHMEM_SERVICE_STARTED: &str = "AFL_SHMEM_SERVICE_STARTED";
 
-/// Hands out served shared maps, as used on Android.
+///     s out served shared maps, as used on Android.
 #[derive(Debug)]
 pub struct ServedShMemProvider<SP>
 where
@@ -79,6 +85,26 @@ where
     server_fd: i32,
 }
 
+impl<SH> Deref for ServedShMem<SH>
+where
+    SH: ShMem,
+{
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<SH> DerefMut for ServedShMem<SH>
+where
+    SH: ShMem,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
 impl<SH> ShMem for ServedShMem<SH>
 where
     SH: ShMem,
@@ -86,29 +112,6 @@ where
     fn id(&self) -> ShMemId {
         let client_id = self.inner.id();
         ShMemId::from_string(&format!("{}:{client_id}", self.server_fd))
-    }
-
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-}
-
-impl<SH> AsSlice for ServedShMem<SH>
-where
-    SH: ShMem,
-{
-    type Entry = u8;
-    fn as_slice(&self) -> &[u8] {
-        self.inner.as_slice()
-    }
-}
-impl<SH> AsMutSlice for ServedShMem<SH>
-where
-    SH: ShMem,
-{
-    type Entry = u8;
-    fn as_mut_slice(&mut self) -> &mut [u8] {
-        self.inner.as_mut_slice()
     }
 }
 
@@ -179,7 +182,7 @@ where
     /// Connect to the server and return a new [`ServedShMemProvider`]
     /// Will try to spawn a [`ShMemService`]. This will only work for the first try.
     fn new() -> Result<Self, Error> {
-        // Needed for MacOS and Android to get sharedmaps working.
+        // Needed for `MacOS` and Android to get sharedmaps working.
         let service = ShMemService::<SP>::start();
 
         let mut res = Self {
@@ -282,7 +285,7 @@ pub enum ServedShMemRequest {
     PreFork(),
     /// The client's child re-registers with us after it forked.
     PostForkChildHello(i32),
-    /// The ShMem Service should exit. This is sually sent internally on `drop`, but feel free to do whatever with it?
+    /// The `ShMem` Service should exit. This is sually sent internally on `drop`, but feel free to do whatever with it?
     Exit,
 }
 
@@ -671,7 +674,7 @@ where
         };
 
         let mut poll_fds: Vec<PollFd> = vec![PollFd::new(
-            listener.as_raw_fd(),
+            listener.as_fd(),
             PollFlags::POLLIN | PollFlags::POLLRDNORM | PollFlags::POLLRDBAND,
         )];
 
@@ -680,7 +683,7 @@ where
         cvar.notify_one();
 
         loop {
-            match poll(&mut poll_fds, -1) {
+            match poll(&mut poll_fds, PollTimeout::NONE) {
                 Ok(num_fds) if num_fds > 0 => (),
                 Ok(_) => continue,
                 Err(e) => {
@@ -714,12 +717,19 @@ where
                         };
 
                         log::info!("Received connection from {_addr:?}");
+
                         let pollfd = PollFd::new(
-                            stream.as_raw_fd(),
+                            // # Safety
+                            // Going through a raw fd will make `PollFd::new` ignore the lifetime of our stream.
+                            // As of nix 0.27, the `PollFd` is safer, in that it checks the lifetime of the given stream.
+                            // We did not develop this server with that new constraint in mind, but it is upheld by our code.
+                            unsafe { BorrowedFd::borrow_raw(stream.as_raw_fd()) },
                             PollFlags::POLLIN | PollFlags::POLLRDNORM | PollFlags::POLLRDBAND,
                         );
-                        poll_fds.push(pollfd);
+
                         let client = SharedShMemClient::new(stream);
+
+                        poll_fds.push(pollfd);
                         let client_id = client.stream.as_raw_fd();
                         self.clients.insert(client_id, client);
                         match self.handle_client(client_id) {

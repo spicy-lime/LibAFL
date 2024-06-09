@@ -1,16 +1,18 @@
 //! The tracing stage can trace the target and enrich a testcase with metadata, for example for `CmpLog`.
 
+use alloc::borrow::Cow;
 use core::{fmt::Debug, marker::PhantomData};
 
+use libafl_bolts::Named;
+
 use crate::{
-    corpus::{Corpus, HasCurrentCorpusIdx},
     executors::{Executor, HasObservers, ShadowExecutor},
     mark_feature_time,
     observers::ObserversTuple,
-    stages::Stage,
+    stages::{RetryRestartHelper, Stage},
     start_timer,
-    state::{HasCorpus, HasExecutions, State, UsesState},
-    Error,
+    state::{HasCorpus, HasCurrentTestcase, HasExecutions, State, UsesState},
+    Error, HasNamedMetadata,
 };
 #[cfg(feature = "introspection")]
 use crate::{monitors::PerfFeature, state::HasClientPerfMonitor};
@@ -19,6 +21,7 @@ use crate::{monitors::PerfFeature, state::HasClientPerfMonitor};
 #[derive(Clone, Debug)]
 pub struct TracingStage<EM, TE, Z> {
     tracer_executor: TE,
+    max_retries: usize,
     #[allow(clippy::type_complexity)]
     phantom: PhantomData<(EM, TE, Z)>,
 }
@@ -30,32 +33,25 @@ where
     type State = TE::State;
 }
 
-impl<E, EM, TE, Z> Stage<E, EM, Z> for TracingStage<EM, TE, Z>
+impl<EM, TE, Z> TracingStage<EM, TE, Z>
 where
-    E: UsesState<State = TE::State>,
     TE: Executor<EM, Z> + HasObservers,
-    TE::State: HasExecutions + HasCorpus,
-    EM: UsesState<State = TE::State>,
-    Z: UsesState<State = TE::State>,
+    <Self as UsesState>::State: HasExecutions + HasCorpus + HasNamedMetadata,
+    EM: UsesState<State = <Self as UsesState>::State>,
+    Z: UsesState<State = <Self as UsesState>::State>,
 {
-    type Progress = (); // this stage cannot be resumed
-
-    #[inline]
-    fn perform(
+    #[allow(rustdoc::broken_intra_doc_links)]
+    /// Perform tracing on the given `CorpusId`. Useful for if wrapping [`TracingStage`] with your
+    /// own stage and you need to manage [`super::NestedStageRestartHelper`] differently
+    /// see [`super::ConcolicTracingStage`]'s implementation as an example of usage.
+    pub fn trace(
         &mut self,
         fuzzer: &mut Z,
-        _executor: &mut E,
-        state: &mut TE::State,
+        state: &mut <Self as UsesState>::State,
         manager: &mut EM,
     ) -> Result<(), Error> {
-        let Some(corpus_idx) = state.current_corpus_idx()? else {
-            return Err(Error::illegal_state(
-                "state is not currently processing a corpus index",
-            ));
-        };
-
         start_timer!(state);
-        let input = state.corpus().cloned_input_for_id(corpus_idx)?;
+        let input = state.current_input_cloned()?;
 
         mark_feature_time!(state, PerfFeature::GetInputFromCorpus);
 
@@ -83,13 +79,57 @@ where
     }
 }
 
+impl<E, EM, TE, Z> Stage<E, EM, Z> for TracingStage<EM, TE, Z>
+where
+    E: UsesState<State = <Self as UsesState>::State>,
+    TE: Executor<EM, Z> + HasObservers,
+    <Self as UsesState>::State: HasExecutions + HasCorpus + HasNamedMetadata,
+    EM: UsesState<State = <Self as UsesState>::State>,
+    Z: UsesState<State = <Self as UsesState>::State>,
+{
+    #[inline]
+    fn perform(
+        &mut self,
+        fuzzer: &mut Z,
+        _executor: &mut E,
+        state: &mut <Self as UsesState>::State,
+        manager: &mut EM,
+    ) -> Result<(), Error> {
+        self.trace(fuzzer, state, manager)
+    }
+
+    fn restart_progress_should_run(&mut self, state: &mut Self::State) -> Result<bool, Error> {
+        RetryRestartHelper::restart_progress_should_run(state, self, self.max_retries)
+    }
+
+    fn clear_restart_progress(&mut self, state: &mut Self::State) -> Result<(), Error> {
+        RetryRestartHelper::clear_restart_progress(state, self)
+    }
+}
+
+impl<EM, TE, Z> Named for TracingStage<EM, TE, Z> {
+    fn name(&self) -> &Cow<'static, str> {
+        static NAME: Cow<'static, str> = Cow::Borrowed("TracingStage");
+        &NAME
+    }
+}
+
 impl<EM, TE, Z> TracingStage<EM, TE, Z> {
     /// Creates a new default stage
     pub fn new(tracer_executor: TE) -> Self {
         Self {
             tracer_executor,
+            max_retries: 10,
             phantom: PhantomData,
         }
+    }
+
+    /// Specify how many times that this stage will try again to trace the input before giving up
+    /// and not processing the input again. 0 retries means that the trace will be tried only once.
+    #[must_use]
+    pub fn with_retries(mut self, retries: usize) -> Self {
+        self.max_retries = retries;
+        self
     }
 
     /// Gets the underlying tracer executor
@@ -102,9 +142,11 @@ impl<EM, TE, Z> TracingStage<EM, TE, Z> {
         &mut self.tracer_executor
     }
 }
+
 /// A stage that runs the shadow executor using also the shadow observers
 #[derive(Clone, Debug)]
 pub struct ShadowTracingStage<E, EM, SOT, Z> {
+    max_retries: usize,
     #[allow(clippy::type_complexity)]
     phantom: PhantomData<(E, EM, SOT, Z)>,
 }
@@ -116,32 +158,34 @@ where
     type State = E::State;
 }
 
+impl<E, EM, SOT, Z> Named for ShadowTracingStage<E, EM, SOT, Z>
+where
+    E: UsesState,
+{
+    fn name(&self) -> &Cow<'static, str> {
+        static NAME: Cow<'static, str> = Cow::Borrowed("ShadowTracingStage");
+        &NAME
+    }
+}
+
 impl<E, EM, SOT, Z> Stage<ShadowExecutor<E, SOT>, EM, Z> for ShadowTracingStage<E, EM, SOT, Z>
 where
     E: Executor<EM, Z> + HasObservers,
-    EM: UsesState<State = E::State>,
+    EM: UsesState<State = <Self as UsesState>::State>,
     SOT: ObserversTuple<E::State>,
-    Z: UsesState<State = E::State>,
-    E::State: State + HasExecutions + HasCorpus + Debug,
+    Z: UsesState<State = <Self as UsesState>::State>,
+    <Self as UsesState>::State: State + HasExecutions + HasCorpus + HasNamedMetadata + Debug,
 {
-    type Progress = (); // this stage cannot be resumed
-
     #[inline]
     fn perform(
         &mut self,
         fuzzer: &mut Z,
         executor: &mut ShadowExecutor<E, SOT>,
-        state: &mut E::State,
+        state: &mut <Self as UsesState>::State,
         manager: &mut EM,
     ) -> Result<(), Error> {
-        let Some(corpus_idx) = state.current_corpus_idx()? else {
-            return Err(Error::illegal_state(
-                "state is not currently processing a corpus index",
-            ));
-        };
-
         start_timer!(state);
-        let input = state.corpus().cloned_input_for_id(corpus_idx)?;
+        let input = state.current_input_cloned()?;
 
         mark_feature_time!(state, PerfFeature::GetInputFromCorpus);
 
@@ -169,20 +213,37 @@ where
 
         Ok(())
     }
+
+    fn restart_progress_should_run(&mut self, state: &mut Self::State) -> Result<bool, Error> {
+        RetryRestartHelper::restart_progress_should_run(state, self, self.max_retries)
+    }
+
+    fn clear_restart_progress(&mut self, state: &mut Self::State) -> Result<(), Error> {
+        RetryRestartHelper::clear_restart_progress(state, self)
+    }
 }
 
 impl<E, EM, SOT, Z> ShadowTracingStage<E, EM, SOT, Z>
 where
     E: Executor<EM, Z> + HasObservers,
-    E::State: State + HasExecutions + HasCorpus,
-    EM: UsesState<State = E::State>,
+    <Self as UsesState>::State: State + HasExecutions + HasCorpus,
+    EM: UsesState<State = <Self as UsesState>::State>,
     SOT: ObserversTuple<E::State>,
-    Z: UsesState<State = E::State>,
+    Z: UsesState<State = <Self as UsesState>::State>,
 {
     /// Creates a new default stage
     pub fn new(_executor: &mut ShadowExecutor<E, SOT>) -> Self {
         Self {
+            max_retries: 10,
             phantom: PhantomData,
         }
+    }
+
+    /// Specify how many times that this stage will try again to trace the input before giving up
+    /// and not processing the input again. 0 retries means that the trace will be tried only once.
+    #[must_use]
+    pub fn with_retries(mut self, retries: usize) -> Self {
+        self.max_retries = retries;
+        self
     }
 }

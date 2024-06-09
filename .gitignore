@@ -66,3 +66,12 @@ libafl_nyx/packer
 .gdb_history
 # No llvm IR
 *.ll
+
+*.tar.gz
+
+# common harness names
+harness
+program
+fuzzer
+fuzzer_libpng*
+forkserver_simple
