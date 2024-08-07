@@ -25,14 +25,14 @@ use crate::{
 };
 
 /// The llmp event manager
-pub mod mgr;
-pub use mgr::*;
+// pub mod mgr;
+// pub use mgr::*;
 
 /// The llmp restarting manager
-#[cfg(feature = "std")]
-pub mod restarting;
-#[cfg(feature = "std")]
-pub use restarting::*;
+// #[cfg(feature = "std")]
+// pub mod restarting;
+// #[cfg(feature = "std")]
+// pub use restarting::*;
 
 /// Forward this to the client
 pub(crate) const _LLMP_TAG_EVENT_TO_CLIENT: Tag = Tag(0x2C11E471);
@@ -84,33 +84,27 @@ impl LlmpShouldSaveState {
 }
 
 /// A manager-like llmp client that converts between input types
-pub struct LlmpEventConverter<DI, IC, ICB, S, SP>
+pub struct LlmpEventConverter<IC, ICB, SP, VH>
 where
-    S: UsesInput,
     SP: ShMemProvider,
-    IC: InputConverter<From = S::Input, To = DI>,
-    ICB: InputConverter<From = DI, To = S::Input>,
-    DI: Input,
 {
     throttle: Option<Duration>,
     llmp: LlmpClient<SP>,
     last_sent: Duration,
     /// The custom buf handler
-    custom_buf_handlers: Vec<Box<CustomBufHandlerFn<S>>>,
+    custom_buf_handlers: VH,
     #[cfg(feature = "llmp_compression")]
     compressor: GzipCompressor,
     converter: Option<IC>,
     converter_back: Option<ICB>,
-    phantom: PhantomData<S>,
 }
 
 impl
     LlmpEventConverter<
-        NopInput,
         NopInputConverter<NopInput>,
         NopInputConverter<NopInput>,
-        NopState<NopInput>,
         NopShMemProvider,
+        (),
     >
 {
     /// Create a builder for [`LlmpEventConverter`]
@@ -142,18 +136,14 @@ impl LlmpEventConverterBuilder {
     }
 
     /// Create a event converter from a raw llmp client
-    pub fn build_from_client<DI, IC, ICB, S, SP>(
+    pub fn build_from_client<IC, ICB, SP>(
         self,
         llmp: LlmpClient<SP>,
         converter: Option<IC>,
         converter_back: Option<ICB>,
-    ) -> Result<LlmpEventConverter<DI, IC, ICB, S, SP>, Error>
+    ) -> Result<LlmpEventConverter<IC, ICB, SP>, Error>
     where
         SP: ShMemProvider,
-        S: UsesInput,
-        IC: InputConverter<From = S::Input, To = DI>,
-        ICB: InputConverter<From = DI, To = S::Input>,
-        DI: Input,
     {
         Ok(LlmpEventConverter {
             throttle: self.throttle,
@@ -163,7 +153,6 @@ impl LlmpEventConverterBuilder {
             compressor: GzipCompressor::with_threshold(COMPRESS_THRESHOLD),
             converter,
             converter_back,
-            phantom: PhantomData,
             custom_buf_handlers: vec![],
         })
     }
@@ -176,13 +165,9 @@ impl LlmpEventConverterBuilder {
         port: u16,
         converter: Option<IC>,
         converter_back: Option<ICB>,
-    ) -> Result<LlmpEventConverter<DI, IC, ICB, S, SP>, Error>
+    ) -> Result<LlmpEventConverter<IC, ICB, SP, ()>, Error>
     where
         SP: ShMemProvider,
-        S: UsesInput,
-        IC: InputConverter<From = S::Input, To = DI>,
-        ICB: InputConverter<From = DI, To = S::Input>,
-        DI: Input,
     {
         let llmp = LlmpClient::create_attach_to_tcp(shmem_provider, port)?;
         Ok(LlmpEventConverter {
@@ -193,26 +178,21 @@ impl LlmpEventConverterBuilder {
             compressor: GzipCompressor::with_threshold(COMPRESS_THRESHOLD),
             converter,
             converter_back,
-            phantom: PhantomData,
             custom_buf_handlers: vec![],
         })
     }
 
     /// If a client respawns, it may reuse the existing connection, previously stored by [`LlmpClient::to_env()`].
     #[cfg(feature = "std")]
-    pub fn build_existing_client_from_env<DI, IC, ICB, S, SP>(
+    pub fn build_existing_client_from_env<DI, I, IC, ICB, SP>(
         self,
         shmem_provider: SP,
         env_name: &str,
         converter: Option<IC>,
         converter_back: Option<ICB>,
-    ) -> Result<LlmpEventConverter<DI, IC, ICB, S, SP>, Error>
+    ) -> Result<LlmpEventConverter<IC, ICB, SP, ()>, Error>
     where
         SP: ShMemProvider,
-        S: UsesInput,
-        IC: InputConverter<From = S::Input, To = DI>,
-        ICB: InputConverter<From = DI, To = S::Input>,
-        DI: Input,
     {
         let llmp = LlmpClient::on_existing_from_env(shmem_provider, env_name)?;
         Ok(LlmpEventConverter {
@@ -223,19 +203,14 @@ impl LlmpEventConverterBuilder {
             compressor: GzipCompressor::with_threshold(COMPRESS_THRESHOLD),
             converter,
             converter_back,
-            phantom: PhantomData,
             custom_buf_handlers: vec![],
         })
     }
 }
 
-impl<DI, IC, ICB, S, SP> core::fmt::Debug for LlmpEventConverter<DI, IC, ICB, S, SP>
+impl<IC, ICB, SP, VH> core::fmt::Debug for LlmpEventConverter<IC, ICB, SP, VH>
 where
     SP: ShMemProvider,
-    S: UsesInput,
-    IC: InputConverter<From = S::Input, To = DI>,
-    ICB: InputConverter<From = DI, To = S::Input>,
-    DI: Input,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut debug_struct = f.debug_struct("LlmpEventConverter");
@@ -243,21 +218,13 @@ where
         //.field("custom_buf_handlers", &self.custom_buf_handlers)
         #[cfg(feature = "llmp_compression")]
         let debug = debug.field("compressor", &self.compressor);
-        debug
-            .field("converter", &self.converter)
-            .field("converter_back", &self.converter_back)
-            .field("phantom", &self.phantom)
-            .finish_non_exhaustive()
+        debug.finish_non_exhaustive()
     }
 }
 
-impl<DI, IC, ICB, S, SP> LlmpEventConverter<DI, IC, ICB, S, SP>
+impl<IC, ICB, SP, VH> LlmpEventConverter<IC, ICB, SP, VH>
 where
-    S: UsesInput + HasExecutions + HasMetadata + Stoppable,
     SP: ShMemProvider,
-    IC: InputConverter<From = S::Input, To = DI>,
-    ICB: InputConverter<From = DI, To = S::Input>,
-    DI: Input,
 {
     // TODO other new_* routines
 
@@ -283,7 +250,7 @@ where
     }
 
     // Handle arriving events in the client
-    fn handle_in_client<E, EM, Z>(
+    fn handle_in_client<DI, E, EM, I, S, Z>(
         &mut self,
         fuzzer: &mut Z,
         executor: &mut E,
@@ -293,10 +260,9 @@ where
         event: Event<DI>,
     ) -> Result<(), Error>
     where
-        E: Executor<EM, Z> + HasObservers<State = S>,
-        EM: UsesState<State = S> + EventFirer,
-        for<'a> E::Observers: Deserialize<'a>,
-        Z: ExecutionProcessor<State = S> + EvaluatorObservers<E::Observers>,
+        Z: EvaluatorObservers<E, EM, I, S>,
+        ICB: InputConverter<From = DI, To = I>,
+        VH:,
     {
         match event {
             Event::NewTestcase {
@@ -308,7 +274,7 @@ where
                     return Ok(());
                 };
 
-                let res = fuzzer.evaluate_input_with_observers::<E, EM>(
+                let res = fuzzer.evaluate_input_with_observers(
                     state,
                     executor,
                     manager,
@@ -339,7 +305,7 @@ where
 
     /// Handle arriving events in the client
     #[allow(clippy::unused_self)]
-    pub fn process<E, EM, Z>(
+    pub fn process<DI, E, EM, I, S, Z>(
         &mut self,
         fuzzer: &mut Z,
         state: &mut S,
@@ -347,10 +313,9 @@ where
         manager: &mut EM,
     ) -> Result<usize, Error>
     where
-        E: Executor<EM, Z> + HasObservers<State = S>,
-        EM: UsesState<State = S> + EventFirer,
-        for<'a> E::Observers: Deserialize<'a>,
-        Z: ExecutionProcessor<State = S> + EvaluatorObservers<E::Observers>,
+        DI: Input,
+        ICB: InputConverter<From = DI, To = I>,
+        Z: EvaluatorObservers<E, EM, I, S>,
     {
         // TODO: Get around local event copy by moving handle_in_client
         let self_id = self.llmp.sender().id();
@@ -385,24 +350,10 @@ where
     }
 }
 
-impl<DI, IC, ICB, S, SP> UsesState for LlmpEventConverter<DI, IC, ICB, S, SP>
+impl<I, IC, ICB, S, SP, VH> EventFirer<I, S> for LlmpEventConverter<IC, ICB, SP, VH>
 where
-    S: State,
+    IC: InputConverter<From = I>,
     SP: ShMemProvider,
-    IC: InputConverter<From = S::Input, To = DI>,
-    ICB: InputConverter<From = DI, To = S::Input>,
-    DI: Input,
-{
-    type State = S;
-}
-
-impl<DI, IC, ICB, S, SP> EventFirer for LlmpEventConverter<DI, IC, ICB, S, SP>
-where
-    S: State,
-    SP: ShMemProvider,
-    IC: InputConverter<From = S::Input, To = DI>,
-    ICB: InputConverter<From = DI, To = S::Input>,
-    DI: Input,
 {
     fn should_send(&self) -> bool {
         if let Some(throttle) = self.throttle {
@@ -413,11 +364,7 @@ where
     }
 
     #[cfg(feature = "llmp_compression")]
-    fn fire(
-        &mut self,
-        _state: &mut Self::State,
-        event: Event<<Self::State as UsesInput>::Input>,
-    ) -> Result<(), Error> {
+    fn fire(&mut self, _state: &mut S, event: Event<I>) -> Result<(), Error> {
         if self.converter.is_none() {
             return Ok(());
         }

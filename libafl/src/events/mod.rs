@@ -12,14 +12,14 @@ pub mod simple;
 // #[cfg(feature = "std")]
 // #[allow(clippy::ignored_unit_patterns)]
 // pub mod launcher;
-// #[allow(clippy::ignored_unit_patterns)]
-// pub mod llmp;
-// pub use llmp::*;
+#[allow(clippy::ignored_unit_patterns)]
+pub mod llmp;
+pub use llmp::*;
 // #[cfg(feature = "tcp_manager")]
 // #[allow(clippy::ignored_unit_patterns)]
 // pub mod tcp;
 
-// pub mod broker_hooks;
+pub mod broker_hooks;
 use alloc::{borrow::Cow, boxed::Box, string::String, vec::Vec};
 use core::{
     fmt,
