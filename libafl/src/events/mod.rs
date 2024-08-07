@@ -425,14 +425,6 @@ pub trait EventFirer<I, S> {
         )
     }
 
-    /// Serialize all observers for this type and manager
-    fn serialize_observers<OT>(&mut self, observers: &OT) -> Result<Option<Vec<u8>>, Error>
-    where
-        OT: Serialize,
-    {
-        Ok(Some(postcard::to_allocvec(observers)?))
-    }
-
     /// Get the configuration
     fn configuration(&self) -> EventConfig {
         EventConfig::AlwaysUnique
@@ -795,14 +787,6 @@ where
     }
 
     #[inline]
-    fn serialize_observers<OT>(&mut self, observers: &OT) -> Result<Option<Vec<u8>>, Error>
-    where
-        OT: Serialize,
-    {
-        self.inner.serialize_observers(observers)
-    }
-
-    #[inline]
     fn configuration(&self) -> EventConfig {
         self.inner.configuration()
     }
@@ -890,6 +874,56 @@ where
     }
 }
 
+/// Serialize the observer using the `time_factor` and `percentage_threshold`.
+/// These parameters are unique to each of the different types of `EventManager`
+pub(crate) fn serialize_observers_adaptive<EM, OT>(
+    manager: &mut EM,
+    observers: &OT,
+    time_factor: u32,
+    percentage_threshold: usize,
+) -> Result<Option<Vec<u8>>, Error>
+where
+    EM: AdaptiveSerializer,
+    OT: MatchName + Serialize,
+{
+    match manager.time_ref() {
+        Some(t) => {
+            let exec_time = observers
+                .get(t)
+                .map(|o| o.last_runtime().unwrap_or(Duration::ZERO))
+                .unwrap();
+
+            let mut must_ser = (manager.serialization_time() + manager.deserialization_time())
+                * time_factor
+                < exec_time;
+            if must_ser {
+                *manager.should_serialize_cnt_mut() += 1;
+            }
+
+            if manager.serializations_cnt() > 32 {
+                must_ser = (manager.should_serialize_cnt() * 100 / manager.serializations_cnt())
+                    > percentage_threshold;
+            }
+
+            if manager.serialization_time() == Duration::ZERO
+                || must_ser
+                || manager.serializations_cnt().trailing_zeros() >= 8
+            {
+                let start = current_time();
+                let ser = postcard::to_allocvec(observers)?;
+                *manager.serialization_time_mut() = current_time() - start;
+
+                *manager.serializations_cnt_mut() += 1;
+                Ok(Some(ser))
+            } else {
+                *manager.serializations_cnt_mut() += 1;
+                Ok(None)
+            }
+        }
+        None => Ok(None),
+    }
+}
+
 /// Collected stats to decide if observers must be serialized or not
 pub trait AdaptiveSerializer {
     /// Expose the collected observers serialization time
@@ -912,55 +946,6 @@ pub trait AdaptiveSerializer {
 
     /// A [`Handle`] to the time observer to determine the `time_factor`
     fn time_ref(&self) -> &Option<Handle<TimeObserver>>;
-
-    /// Serialize the observer using the `time_factor` and `percentage_threshold`.
-    /// These parameters are unique to each of the different types of `EventManager`
-    fn serialize_observers_adaptive<S, OT>(
-        &mut self,
-        observers: &OT,
-        time_factor: u32,
-        percentage_threshold: usize,
-    ) -> Result<Option<Vec<u8>>, Error>
-    where
-        OT: MatchName + Serialize,
-    {
-        match self.time_ref() {
-            Some(t) => {
-                let exec_time = observers
-                    .get(t)
-                    .map(|o| o.last_runtime().unwrap_or(Duration::ZERO))
-                    .unwrap();
-
-                let mut must_ser = (self.serialization_time() + self.deserialization_time())
-                    * time_factor
-                    < exec_time;
-                if must_ser {
-                    *self.should_serialize_cnt_mut() += 1;
-                }
-
-                if self.serializations_cnt() > 32 {
-                    must_ser = (self.should_serialize_cnt() * 100 / self.serializations_cnt())
-                        > percentage_threshold;
-                }
-
-                if self.serialization_time() == Duration::ZERO
-                    || must_ser
-                    || self.serializations_cnt().trailing_zeros() >= 8
-                {
-                    let start = current_time();
-                    let ser = postcard::to_allocvec(observers)?;
-                    *self.serialization_time_mut() = current_time() - start;
-
-                    *self.serializations_cnt_mut() += 1;
-                    Ok(Some(ser))
-                } else {
-                    *self.serializations_cnt_mut() += 1;
-                    Ok(None)
-                }
-            }
-            None => Ok(None),
-        }
-    }
 }
 
 #[cfg(test)]

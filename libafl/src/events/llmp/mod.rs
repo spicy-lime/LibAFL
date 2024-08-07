@@ -1,7 +1,6 @@
 //! LLMP-backed event manager for scalable multi-processed fuzzing
 
-use alloc::{boxed::Box, vec::Vec};
-use core::{marker::PhantomData, time::Duration};
+use core::time::Duration;
 
 #[cfg(feature = "llmp_compression")]
 use libafl_bolts::{
@@ -13,20 +12,17 @@ use libafl_bolts::{
     shmem::{NopShMemProvider, ShMemProvider},
     ClientId,
 };
-use serde::Deserialize;
 
 use crate::{
-    events::{CustomBufEventResult, CustomBufHandlerFn, Event, EventFirer},
-    executors::{Executor, HasObservers},
-    fuzzer::{EvaluatorObservers, ExecutionProcessor},
+    events::{Event, EventFirer},
+    fuzzer::EvaluatorObservers,
     inputs::{Input, InputConverter, NopInput, NopInputConverter},
-    state::{HasExecutions, NopState, State, Stoppable},
-    Error, HasMetadata,
+    Error,
 };
 
 /// The llmp event manager
-// pub mod mgr;
-// pub use mgr::*;
+pub mod mgr;
+pub use mgr::*;
 
 /// The llmp restarting manager
 // #[cfg(feature = "std")]
@@ -84,7 +80,7 @@ impl LlmpShouldSaveState {
 }
 
 /// A manager-like llmp client that converts between input types
-pub struct LlmpEventConverter<IC, ICB, SP, VH>
+pub struct LlmpEventConverter<IC, ICB, SP>
 where
     SP: ShMemProvider,
 {
@@ -92,7 +88,6 @@ where
     llmp: LlmpClient<SP>,
     last_sent: Duration,
     /// The custom buf handler
-    custom_buf_handlers: VH,
     #[cfg(feature = "llmp_compression")]
     compressor: GzipCompressor,
     converter: Option<IC>,
@@ -100,12 +95,7 @@ where
 }
 
 impl
-    LlmpEventConverter<
-        NopInputConverter<NopInput>,
-        NopInputConverter<NopInput>,
-        NopShMemProvider,
-        (),
-    >
+    LlmpEventConverter<NopInputConverter<NopInput>, NopInputConverter<NopInput>, NopShMemProvider>
 {
     /// Create a builder for [`LlmpEventConverter`]
     #[must_use]
@@ -153,7 +143,6 @@ impl LlmpEventConverterBuilder {
             compressor: GzipCompressor::with_threshold(COMPRESS_THRESHOLD),
             converter,
             converter_back,
-            custom_buf_handlers: vec![],
         })
     }
 
@@ -165,7 +154,7 @@ impl LlmpEventConverterBuilder {
         port: u16,
         converter: Option<IC>,
         converter_back: Option<ICB>,
-    ) -> Result<LlmpEventConverter<IC, ICB, SP, ()>, Error>
+    ) -> Result<LlmpEventConverter<IC, ICB, SP>, Error>
     where
         SP: ShMemProvider,
     {
@@ -178,7 +167,6 @@ impl LlmpEventConverterBuilder {
             compressor: GzipCompressor::with_threshold(COMPRESS_THRESHOLD),
             converter,
             converter_back,
-            custom_buf_handlers: vec![],
         })
     }
 
@@ -190,7 +178,7 @@ impl LlmpEventConverterBuilder {
         env_name: &str,
         converter: Option<IC>,
         converter_back: Option<ICB>,
-    ) -> Result<LlmpEventConverter<IC, ICB, SP, ()>, Error>
+    ) -> Result<LlmpEventConverter<IC, ICB, SP>, Error>
     where
         SP: ShMemProvider,
     {
@@ -203,12 +191,11 @@ impl LlmpEventConverterBuilder {
             compressor: GzipCompressor::with_threshold(COMPRESS_THRESHOLD),
             converter,
             converter_back,
-            custom_buf_handlers: vec![],
         })
     }
 }
 
-impl<IC, ICB, SP, VH> core::fmt::Debug for LlmpEventConverter<IC, ICB, SP, VH>
+impl<IC, ICB, SP> core::fmt::Debug for LlmpEventConverter<IC, ICB, SP>
 where
     SP: ShMemProvider,
 {
@@ -222,7 +209,7 @@ where
     }
 }
 
-impl<IC, ICB, SP, VH> LlmpEventConverter<IC, ICB, SP, VH>
+impl<IC, ICB, SP> LlmpEventConverter<IC, ICB, SP>
 where
     SP: ShMemProvider,
 {
@@ -262,7 +249,6 @@ where
     where
         Z: EvaluatorObservers<E, EM, I, S>,
         ICB: InputConverter<From = DI, To = I>,
-        VH:,
     {
         match event {
             Event::NewTestcase {
@@ -284,14 +270,6 @@ where
 
                 if let Some(item) = res.1 {
                     log::info!("Added received Testcase as item #{item}");
-                }
-                Ok(())
-            }
-            Event::CustomBuf { tag, buf } => {
-                for handler in &mut self.custom_buf_handlers {
-                    if handler(state, &tag, &buf)? == CustomBufEventResult::Handled {
-                        break;
-                    }
                 }
                 Ok(())
             }
@@ -350,7 +328,7 @@ where
     }
 }
 
-impl<I, IC, ICB, S, SP, VH> EventFirer<I, S> for LlmpEventConverter<IC, ICB, SP, VH>
+impl<I, IC, ICB, S, SP> EventFirer<I, S> for LlmpEventConverter<IC, ICB, SP>
 where
     IC: InputConverter<From = I>,
     SP: ShMemProvider,
@@ -394,7 +372,6 @@ where
                 #[cfg(all(unix, feature = "std", feature = "multi_machine"))]
                 node_id,
             },
-            Event::CustomBuf { buf, tag } => Event::CustomBuf { buf, tag },
             _ => {
                 return Ok(());
             }
