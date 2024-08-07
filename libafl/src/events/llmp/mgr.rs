@@ -24,7 +24,7 @@ use libafl_bolts::{
     llmp::{recv_tcp_msg, send_tcp_msg, TcpRequest, TcpResponse},
     IP_LOCALHOST,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Serialize, Deserialize};
 
 #[cfg(feature = "llmp_compression")]
 use crate::events::llmp::COMPRESS_THRESHOLD;
@@ -467,6 +467,7 @@ impl<EMH, SP: ShMemProvider> LlmpEventManager<EMH, SP> {
 impl<EMH, I, S, SP> EventFirer<I, S> for LlmpEventManager<EMH, SP>
 where
     SP: ShMemProvider,
+    I: Serialize,
 {
     fn should_send(&self) -> bool {
         if let Some(throttle) = self.throttle {
@@ -478,8 +479,6 @@ where
 
     #[cfg(feature = "llmp_compression")]
     fn fire(&mut self, _state: &mut S, event: Event<I>) -> Result<(), Error>
-    where
-        I: Serialize,
     {
         let serialized = postcard::to_allocvec(&event)?;
         let flags = LLMP_FLAG_INITIALIZED;
@@ -536,10 +535,12 @@ where
 impl<E, EMH, S, SP, Z> EventProcessor<E, S, Z> for LlmpEventManager<EMH, SP>
 where
     SP: ShMemProvider,
+    E: HasObservers,
+    S: Stoppable + HasImported,
+    for<'de> E::Observers: Deserialize<'de>,
+    Z: Evaluator<E, Self, AAA, S>,
 {
     fn process(&mut self, fuzzer: &mut Z, state: &mut S, executor: &mut E) -> Result<usize, Error>
-    where
-        E: HasObservers,
     {
         // TODO: Get around local event copy by moving handle_in_client
         let self_id = self.llmp.sender().id();
@@ -564,7 +565,7 @@ where
             } else {
                 msg
             };
-            let event: Event<S::Input> = postcard::from_bytes(event_bytes)?;
+            let event: Event<AAA> = postcard::from_bytes(event_bytes)?;
             log::debug!("Received event in normal llmp {}", event.name_detailed());
             self.handle_in_client(fuzzer, executor, state, client_id, event)?;
             count += 1;
@@ -591,11 +592,11 @@ where
     }
 
     fn report_progress(&mut self, state: &mut S) -> Result<(), Error> {
-        default_report_progress(self, state)
+        default_report_progress::<(), Self, S>(self, state)
     }
 }
 
-impl<EMH, S, SP> HasEventManagerId for LlmpEventManager<EMH, SP>
+impl<EMH, SP> HasEventManagerId for LlmpEventManager<EMH, SP>
 where
     SP: ShMemProvider,
 {
