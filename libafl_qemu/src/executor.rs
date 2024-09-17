@@ -8,19 +8,12 @@ use core::{
 use std::ptr;
 
 use libafl::{
-    events::{EventFirer, EventRestarter},
-    executors::{
+    events::{EventFirer, EventRestarter}, executors::{
         hooks::inprocess::InProcessExecutorHandlerData,
         inprocess::{stateful::StatefulInProcessExecutor, HasInProcessHooks},
         inprocess_fork::stateful::StatefulInProcessForkExecutor,
         Executor, ExitKind, HasObservers,
-    },
-    feedbacks::Feedback,
-    fuzzer::HasObjective,
-    inputs::UsesInput,
-    observers::{ObserversTuple, UsesObservers},
-    state::{HasCorpus, HasExecutions, HasSolutions, State, UsesState},
-    Error, ExecutionProcessor, HasScheduler,
+    }, feedbacks::Feedback, fuzzer::HasObjective, inputs::UsesInput, observers::{ObserversTuple, UsesObservers}, state::{HasCorpus, HasExecutions, HasSolutions, State, UsesState}, Error, ExecutionProcessor, HasMetadata, HasScheduler
 };
 #[cfg(feature = "fork")]
 use libafl_bolts::shmem::ShMemProvider;
@@ -39,7 +32,7 @@ use libc::siginfo_t;
 
 #[cfg(emulation_mode = "usermode")]
 use crate::EmulatorModules;
-use crate::{command::CommandManager, modules::EmulatorModuleTuple, Emulator};
+use crate::{command::CommandManager, modules::{EmulatorModuleTuple, Predicates}, Emulator};
 
 pub struct QemuExecutor<'a, CM, ED, ET, H, OT, S, SM>
 where
@@ -126,7 +119,7 @@ where
     where
         EM: EventFirer<State = S> + EventRestarter<State = S>,
         OF: Feedback<S>,
-        S: Unpin + State + HasExecutions + HasCorpus + HasSolutions,
+        S: Unpin + State + HasExecutions + HasCorpus + HasSolutions + HasMetadata,
         Z: HasObjective<Objective = OF, State = S> + HasScheduler<State = S> + ExecutionProcessor,
     {
         let mut inner = StatefulInProcessExecutor::with_timeout(
@@ -192,7 +185,7 @@ where
     ET: EmulatorModuleTuple<S>,
     H: FnMut(&mut Emulator<CM, ED, ET, S, SM>, &S::Input) -> ExitKind,
     OT: ObserversTuple<S>,
-    S: State + HasExecutions + Unpin,
+    S: State + HasExecutions + Unpin + HasMetadata,
     Z: UsesState<State = S>,
 {
     fn run_target(
@@ -205,6 +198,12 @@ where
         self.inner.exposed_executor_state.first_exec_all();
 
         self.inner.exposed_executor_state.pre_exec_all(input);
+        match state.metadata_mut::<Predicates>() {
+            Ok(m) => {
+                m.clear()
+            },
+            _ => (),
+        }
 
         let mut exit_kind = self.inner.run_target(fuzzer, state, mgr, input)?;
 

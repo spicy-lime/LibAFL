@@ -1,10 +1,18 @@
 use core::{fmt::Debug, ops::Range};
-use std::{cell::UnsafeCell, hash::BuildHasher};
+use std::{borrow::Cow, cell::UnsafeCell, hash::BuildHasher};
 
-use hashbrown::HashSet;
-use libafl::{executors::ExitKind, inputs::UsesInput, observers::ObserversTuple};
-use libafl_bolts::tuples::{MatchFirstType, SplitBorrowExtractFirstType};
+use hashbrown::{HashMap, HashSet};
+use libafl::{
+    executors::ExitKind, inputs::UsesInput, observers::ObserversTuple, prelude::Feedback,
+    state::State, HasMetadata,
+};
+use libafl_bolts::{
+    impl_serdeany,
+    tuples::{MatchFirstType, SplitBorrowExtractFirstType},
+    Named,
+};
 use libafl_qemu_sys::{GuestAddr, GuestPhysAddr};
+use serde::Deserialize;
 
 use crate::Qemu;
 
@@ -30,8 +38,144 @@ pub use calls::CallTracerModule;
 pub mod cmplog;
 #[cfg(not(any(cpu_target = "mips", cpu_target = "hexagon")))]
 pub use cmplog::CmpLogModule;
+use serde::Serialize;
 
 use crate::emu::EmulatorModules;
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
+pub enum Predicate {
+    Edges(GuestAddr, GuestAddr),
+    Max(GuestAddr, u64),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Predicates {
+    predicates: HashSet<Predicate>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PredicatesMap {
+    map: HashMap<Predicate, (usize, usize)>,
+}
+
+impl PredicatesMap {
+    pub fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
+}
+
+impl_serdeany!(PredicatesMap);
+impl_serdeany!(Predicates);
+
+impl Predicates {
+    pub fn new() -> Self {
+        Self {
+            predicates: HashSet::new(),
+        }
+    }
+
+    pub fn add_edges(&mut self, src: GuestAddr, dest: GuestAddr) {
+        self.predicates.insert(Predicate::Edges(src, dest));
+    }
+
+    pub fn clear(&mut self) {
+        self.predicates.clear();
+    }
+
+    pub fn predicates(&self) -> &HashSet<Predicate> {
+        &self.predicates
+    }
+}
+
+pub struct PredicateFeedback {
+    was_crash: bool,
+}
+
+impl Named for PredicateFeedback {
+    fn name(&self) -> &Cow<'static, str> {
+        &Cow::Borrowed("predicates")
+    }
+}
+
+impl PredicateFeedback {
+    pub fn new() -> Self {
+        Self { was_crash: false }
+    }
+}
+
+impl<S> Feedback<S> for PredicateFeedback
+where
+    S: State + HasMetadata,
+{
+    fn is_interesting<EM, OT>(
+        &mut self,
+        _state: &mut S,
+        _manager: &mut EM,
+        _input: &S::Input,
+        _observers: &OT,
+        exit_kind: &ExitKind,
+    ) -> Result<bool, libafl::Error>
+    where
+        EM: libafl::prelude::EventFirer<State = S>,
+        OT: ObserversTuple<S>,
+    {
+        match exit_kind {
+            ExitKind::Ok => {
+                self.was_crash = false;
+                Ok(true)
+            }
+            ExitKind::Crash => {
+                self.was_crash = true;
+                Ok(true)
+            }
+            _ => {
+                self.was_crash = false;
+                Ok(false)
+            }
+        }
+    }
+
+    fn append_metadata<EM, OT>(
+        &mut self,
+        state: &mut S,
+        _manager: &mut EM,
+        _observers: &OT,
+        _testcase: &mut libafl::prelude::Testcase<<S>::Input>,
+    ) -> Result<(), libafl::Error>
+    where
+        OT: ObserversTuple<S>,
+        EM: libafl::prelude::EventFirer<State = S>,
+    {
+        let mut predicates = vec![];
+        if let Ok(meta) = state.metadata::<Predicates>() {
+            for predicate in &meta.predicates {
+                predicates.push(predicate.clone());
+            }
+        }
+
+        let map = state.metadata_or_insert_with(PredicatesMap::new);
+        for predicate in predicates {
+            if self.was_crash {
+                map.map.entry(predicate)
+                .and_modify(|e| {
+                    e.0 += 1;
+                    e.1 += 1
+                })
+                .or_insert((1, 1));
+            }
+            else{
+                map.map.entry(predicate)
+                .and_modify(|e| e.1 += 1)
+                .or_insert((0, 1));
+            }
+        }
+
+        println!("{:#?}", map);
+        Ok(())
+    }
+}
 
 /// A module for `libafl_qemu`.
 // TODO remove 'static when specialization will be stable

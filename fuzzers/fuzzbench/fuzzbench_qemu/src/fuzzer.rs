@@ -16,7 +16,7 @@ use libafl::{
     corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
     events::SimpleRestartingEventManager,
     executors::{ExitKind, ShadowExecutor},
-    feedback_or,
+    feedback_or, feedback_and,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback},
     fuzzer::{Fuzzer, StdFuzzer},
     inputs::{BytesInput, HasTargetBytes},
@@ -53,6 +53,7 @@ use libafl_qemu::{
     modules::edges::{
         edges_map_mut_ptr, EdgeCoverageModule, EDGES_MAP_SIZE_IN_USE, MAX_EDGES_FOUND,
     },
+    modules::PredicateFeedback,
     Emulator,
     GuestReg,
     //snapshot::QemuSnapshotHelper,
@@ -272,17 +273,22 @@ fn fuzz(
 
     let calibration = CalibrationStage::new(&map_feedback);
 
+    let predicates_one = PredicateFeedback::new();
     // Feedback to rate the interestingness of an input
     // This one is composed by two Feedbacks in OR
     let mut feedback = feedback_or!(
         // New maximization map feedback linked to the edges observer and the feedback state
-        map_feedback,
+        feedback_and!(map_feedback, predicates_one),
         // Time feedback, this one does not need a feedback state
         TimeFeedback::new(&time_observer)
     );
 
     // A feedback to choose if an input is a solution or not
-    let mut objective = CrashFeedback::new();
+    let crash = CrashFeedback::new();
+    let crash_map = MaxMapFeedback::with_name("crash_map", &edges_observer);
+    let predicates_two = PredicateFeedback::new();
+    let mut objective = feedback_and!(crash, crash_map, predicates_two);
+
 
     // create a State from scratch
     let mut state = state.unwrap_or_else(|| {
@@ -356,9 +362,10 @@ fn fuzz(
             }
         }
     };
-
+    let mut edges_module = EdgeCoverageModule::default();
+    edges_module.use_sfl = true;
     let modules = tuple_list!(
-        EdgeCoverageModule::default(),
+        edges_module,
         CmpLogModule::default(),
         // QemuAsanHelper::default(asan),
         //QemuSnapshotHelper::new()
@@ -406,8 +413,8 @@ fn fuzz(
     #[cfg(unix)]
     {
         let null_fd = file_null.as_raw_fd();
-        dup2(null_fd, io::stdout().as_raw_fd())?;
-        dup2(null_fd, io::stderr().as_raw_fd())?;
+        // dup2(null_fd, io::stdout().as_raw_fd())?;
+        // dup2(null_fd, io::stderr().as_raw_fd())?;
     }
     // reopen file to make sure we're at the end
     log.replace(

@@ -17,7 +17,7 @@ use crate::{
     emu::EmulatorModules,
     modules::{
         hash_me, EmulatorModule, EmulatorModuleTuple, HasInstrumentationFilter, IsFilter,
-        QemuInstrumentationAddressRangeFilter,
+        Predicates, QemuInstrumentationAddressRangeFilter,
     },
     qemu::Hook,
 };
@@ -29,6 +29,7 @@ use crate::{
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct QemuEdgesMapMetadata {
     pub map: HashMap<(GuestAddr, GuestAddr), u64>,
+    pub revmap: HashMap<u64, (GuestAddr, GuestAddr)>,
     pub current_id: u64,
 }
 
@@ -37,6 +38,7 @@ impl QemuEdgesMapMetadata {
     pub fn new() -> Self {
         Self {
             map: HashMap::new(),
+            revmap: HashMap::new(),
             current_id: 0,
         }
     }
@@ -49,6 +51,7 @@ libafl_bolts::impl_serdeany!(QemuEdgesMapMetadata);
 pub struct EdgeCoverageModule {
     address_filter: QemuInstrumentationAddressRangeFilter,
     use_hitcounts: bool,
+    pub use_sfl: bool,
 }
 
 #[cfg(emulation_mode = "systemmode")]
@@ -66,6 +69,7 @@ impl EdgeCoverageModule {
         Self {
             address_filter,
             use_hitcounts: true,
+            use_sfl: false,
         }
     }
 
@@ -74,12 +78,18 @@ impl EdgeCoverageModule {
         Self {
             address_filter,
             use_hitcounts: false,
+            use_sfl: false,
         }
     }
 
     #[must_use]
     pub fn must_instrument(&self, addr: GuestAddr) -> bool {
         self.address_filter.allowed(addr)
+    }
+
+    #[must_use]
+    pub fn use_sfl(&self) -> bool {
+        self.use_sfl
     }
 }
 
@@ -166,8 +176,10 @@ where
             //     Hook::Function(gen_unique_edge_ids::<ET, S>),
             //     Hook::Raw(trace_edge_hitcount),
             // );
-            let hook_id =
-                emulator_modules.edges(Hook::Function(gen_unique_edge_ids::<ET, S>), Hook::Empty);
+            let hook_id = emulator_modules.edges(
+                Hook::Function(gen_unique_edge_ids::<ET, S>),
+                Hook::Function(exec_edges::<ET, S>),
+            );
             unsafe {
                 libafl_qemu_sys::libafl_qemu_edge_hook_set_jit(
                     hook_id.0,
@@ -179,8 +191,10 @@ where
             //     Hook::Function(gen_unique_edge_ids::<ET, S>),
             //     Hook::Raw(trace_edge_single),
             // );
-            let hook_id =
-                emulator_modules.edges(Hook::Function(gen_unique_edge_ids::<ET, S>), Hook::Empty);
+            let hook_id = emulator_modules.edges(
+                Hook::Function(gen_unique_edge_ids::<ET, S>),
+                Hook::Function(exec_edges::<ET, S>),
+            );
             unsafe {
                 libafl_qemu_sys::libafl_qemu_edge_hook_set_jit(
                     hook_id.0,
@@ -539,14 +553,14 @@ where
     let state = state.expect("The gen_unique_edge_ids hook works only for in-process fuzzing");
     let meta = state.metadata_or_insert_with(QemuEdgesMapMetadata::new);
 
-    match meta.map.entry((src, dest)) {
+    let id = match meta.map.entry((src, dest)) {
         Entry::Occupied(e) => {
             let id = *e.get();
             let nxt = (id as usize + 1) & (EDGES_MAP_SIZE_MAX - 1);
             unsafe {
                 MAX_EDGES_FOUND = max(MAX_EDGES_FOUND, nxt);
             }
-            Some(id)
+            id
         }
         Entry::Vacant(e) => {
             let id = meta.current_id;
@@ -555,10 +569,44 @@ where
             unsafe {
                 MAX_EDGES_FOUND = meta.current_id as usize;
             }
-            // GuestAddress is u32 for 32 bit guests
-            #[allow(clippy::unnecessary_cast)]
-            Some(id as u64)
+            id
         }
+    };
+
+    meta.revmap.insert(id, (src, dest));
+    Some(id)
+}
+
+pub fn exec_edges<ET, S>(
+    emulator_modules: &mut EmulatorModules<ET, S>,
+    state: Option<&mut S>,
+    id: u64,
+) where
+    ET: EmulatorModuleTuple<S>,
+    S: Unpin + UsesInput + HasMetadata,
+{
+    let mut use_sfl = false;
+    if let Some(h) = emulator_modules.get::<EdgeCoverageModule>() {
+        if h.use_sfl() {
+            use_sfl = true;
+        }
+    }
+
+    if use_sfl {
+        let state = state.expect("The gen_unique_edge_ids hook works only for in-process fuzzing");
+        let meta = state.metadata::<QemuEdgesMapMetadata>();
+        let (src, dest) = match meta {
+            Ok(m) => match m.revmap.get(&id) {
+                Some((src, dest)) => {
+                    (*src, *dest)
+                }
+                _ => return,
+            },
+            _ => return,
+        };
+
+        let predicates = state.metadata_or_insert_with(Predicates::new);
+        predicates.add_edges(src, dest);
     }
 }
 
