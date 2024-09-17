@@ -185,6 +185,7 @@ fn fuzz(
     let test_one_input_ptr = elf
         .resolve_symbol("LLVMFuzzerTestOneInput", qemu.load_addr())
         .expect("Symbol LLVMFuzzerTestOneInput not found");
+    let text = elf.get_section(".text", qemu.load_addr()).unwrap();
     println!("LLVMFuzzerTestOneInput @ {test_one_input_ptr:#x}");
 
     qemu.set_breakpoint(test_one_input_ptr); // LLVMFuzzerTestOneInput
