@@ -1,4 +1,4 @@
-use core::{fmt::Debug, ops::Range};
+use core::{fmt::{Debug, self}, ops::Range};
 use std::{borrow::Cow, cell::UnsafeCell, hash::BuildHasher};
 
 use hashbrown::{HashMap, HashSet};
@@ -48,6 +48,15 @@ pub enum Predicate {
     Max(GuestAddr, u64),
 }
 
+impl fmt::Display for Predicate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Predicate::Edges(addr1, addr2) => write!(f, "Edges({:#x}, {:#x})", addr1, addr2),
+            Predicate::Max(addr, value) => write!(f, "Max({:#x}, {:#x})", addr, value),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Predicates {
     predicates: HashSet<Predicate>,
@@ -62,6 +71,26 @@ impl PredicatesMap {
     pub fn new() -> Self {
         Self {
             map: HashMap::new(),
+        }
+    }
+
+    pub fn sort_and_show(&self) {
+        let mut entries: Vec<_> = self.map.iter().collect();
+    
+        // Sort entries based on the ratio (first usize) / (second usize)
+        entries.sort_by(|a, b| {
+            let ratio_a = a.1.0 as f64 / a.1.1 as f64;
+            let ratio_b = b.1.0 as f64 / b.1.1 as f64;
+            ratio_b.partial_cmp(&ratio_a).unwrap()
+        });
+    
+        // Take the top 10 entries (or fewer if there are less than 10)
+        let top_10 = entries.iter().take(10);
+    
+        println!("Top 10 entries with highest ratio:");
+        for (i, (key, (first, second))) in top_10.enumerate() {
+            let ratio = *first as f64 / *second as f64;
+            println!("{}. {}: ({}, {}) - Ratio: {:.2}", i + 1, key, first, second, ratio);
         }
     }
 }
@@ -172,7 +201,7 @@ where
             }
         }
 
-        println!("{:#?}", map);
+        map.sort_and_show();
         Ok(())
     }
 }

@@ -36,6 +36,7 @@ cc -c "${PROJECT_DIR}/libfuzzer_main.c"
 cc \
     ./fuzz.c \
     ./libfuzzer_main.o \
+    -g \
     -o ${FUZZER_NAME} \
     -lm -lz
 '''
