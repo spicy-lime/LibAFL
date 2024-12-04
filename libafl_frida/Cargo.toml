@@ -58,11 +58,11 @@ nix = { workspace = true, default-features = true, features = ["mman"] }
 libc = { workspace = true }
 hashbrown = { workspace = true, default-features = true }
 rangemap = { workspace = true }
-frida-gum-sys = { version = "0.15.1", features = [
+frida-gum-sys = { git = "https://github.com/spicy-lime/frida-rust", package = "frida-gum-sys", version = "0.15.1", features = [
   "event-sink",
   "invocation-listener",
 ] }
-frida-gum = { version = "0.15.1", features = [
+frida-gum = { git = "https://github.com/spicy-lime/frida-rust", package = "frida-gum", version = "0.15.1", features = [
   "event-sink",
   "invocation-listener",
   "module-names",
